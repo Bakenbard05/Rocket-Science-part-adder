@@ -1,0 +1,100 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+		<GamePath>E:\SteamLibrary\steamapps\common\HDYLIEM</GamePath>
+		<AssemblyPath>\Rocket Science_Data\Managed</AssemblyPath>
+		<Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+		<Reference Include="Assembly-CSharp">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Assembly-CSharp.dll</HintPath>
+		</Reference>
+		<Reference Include="Newtonsoft.Json">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Newtonsoft.Json.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbe.EngineFlames">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbe.EngineFlames.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Analysis">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Analysis.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.API">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.API.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Common">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Common.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Controller">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Controller.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Model">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Model.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Services">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Services.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Space">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Space.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Support">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Support.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Tools">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Tools.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.UI">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.UI.dll</HintPath>
+		</Reference>
+		<Reference Include="UnitsNet">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnitsNet.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Addressables">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Addressables.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Burst">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Burst.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Burst.Unsafe">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Burst.Unsafe.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Collections">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Collections.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Collections.LowLevel.ILSupport">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Collections.LowLevel.ILSupport.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Entities">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Entities.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Entities.Graphics">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Entities.Graphics.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Mathematics">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Mathematics.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.RenderPipelines.Core.Runtime">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.RenderPipelines.Core.Runtime.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.RenderPipelines.HighDefinition.Runtime">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.RenderPipelines.HighDefinition.Runtime.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.ResourceManager">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.ResourceManager.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.AssetBundleModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.AssetBundleModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.CoreModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.IMGUIModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+		</Reference>
+  </ItemGroup>
+
+</Project>
