@@ -177,7 +177,7 @@ namespace PartRotatorExtension
             {
                 try
                 {
-                    string catalogFile = await File.ReadAllTextAsync(Path.Combine(dir, "catalog.json"));
+                    string catalogFile = await File.ReadAllTextAsync(Path.Combine(dir, "catalog.json.original"));
                     await File.WriteAllTextAsync(Path.Combine(dir, "catalog.json.original"), catalogFile);
                     string needToReplace = "{UnityEngine.AddressableAssets.Addressables.RuntimePath}";
                     string replacement = Regex.Replace(dir, @"\\", @"\\");
