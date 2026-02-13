@@ -1,6 +1,7 @@
 ﻿using Newtonsoft.Json;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -99,6 +100,31 @@ namespace PartRotatorExtension
 
             Object.Destroy(baker);
 
+            var all = rocketPartCache.All().Where(schemaItem => schemaItem.category == PartCategory.aero);
+            var s = "";
+
+            foreach (var item in all)
+            {
+                s += JsonConvert.SerializeObject(item) + '\n';
+            }
+
+            File.WriteAllText("./AllAeroItems.txt", s);
+            all = rocketPartCache.All().Where(schemaItem => schemaItem.category == PartCategory.adapter);
+            s = "";
+            foreach (var item in all)
+            {
+                s += JsonConvert.SerializeObject(item) + '\n';
+            }
+            File.WriteAllText("./AllAdapters.txt", s);
+
+            all = rocketPartCache.All().Where(schemaItem => schemaItem.category == PartCategory.thermal);
+            s = "";
+            foreach (var item in all)
+            {
+                s += JsonConvert.SerializeObject(item) + '\n';
+            }
+            File.WriteAllText("./AllThermal.txt", s);
+
 
             //List<TextAsset> schemesToLoad = new List<TextAsset>
             //{
@@ -130,6 +156,11 @@ namespace PartRotatorExtension
         public override void OnGameLoad()
         {
             Log.Info($"Game was loaded");
+        }
+
+        public override void Simulate(double time, double dt)
+        {
+            base.Simulate(time, dt);
         }
 
         public override void Update()

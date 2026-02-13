@@ -14,6 +14,9 @@ namespace RSExtension
             windowRect = GUILayout.Window(1, windowRect, WindowContent, "Part rotator menu");
         }
 
+        public void Update()
+        {
+        }
 
         void WindowContent(int windowID)
         {

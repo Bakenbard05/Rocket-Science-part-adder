@@ -95,6 +95,9 @@
 		<Reference Include="UnityEngine.IMGUIModule">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
 		</Reference>
+		<Reference Include="UnityEngine.PhysicsModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+		</Reference>
   </ItemGroup>
 
 </Project>
