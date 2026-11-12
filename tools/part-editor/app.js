@@ -85,6 +85,7 @@ const state = {
   modelFileName: '',
   modelLoaded: false,
   volumeInfo: null,       // the last measurement of the meshes (volume, area, per-mesh list)
+  volumePending: false,   // the measurement is scheduled and has not run yet
   jsonInvalid: {},        // 'modules'|'state'|'thermo'|'overrides' -> true while the raw JSON is broken
 };
 
@@ -472,8 +473,7 @@ function setModel(object, fileName) {
   populateNodeMaterialSelect();
   applyAnimationPreview();
   updateModelInfo();
-  state.volumeInfo = null;
-  renderVolumeInfo();
+  scheduleVolumeMeasure();
   renderStatus();
 }
 
@@ -503,7 +503,8 @@ function disposeModel() {
   state.modelObject = null;
   state.modelLoaded = false;
   state.modelNodeMap = null;
-  state.volumeInfo = null;
+  invalidateVolume();
+  renderVolumeInfo();
   previewBases.clear();
   state.explodeRest = null;
   populateAnimationNodes();
@@ -806,8 +807,7 @@ function applyModelTransform() {
   const units = UNITS[state.part.units] ?? 1;
   const scale = Number(state.part.scale) > 0 ? Number(state.part.scale) : 1;
   modelRoot.scale.setScalar(units * scale);
-  state.volumeInfo = null;
-  renderVolumeInfo();
+  scheduleVolumeMeasure(180);
   updateReentryShell();
 }
 
@@ -2147,6 +2147,17 @@ function runCheck() {
         add('warn', t('check.fuelVariantTight', { name, ...describe(units) }));
       }
     }
+
+    // A mesh with a large surface over a small mass cools down instead of
+    // heating up: the game radiates over the whole baked area and heats only the
+    // silhouette that faces the Sun.
+    const forecast = thermalForecast(volume);
+    if (forecast && forecast.kind !== 'ok') {
+      add(forecast.kind, t('check.thermal', {
+        ratio: forecast.ratio.toFixed(1),
+        kelvin: Math.round(forecast.kelvin),
+      }));
+    }
   } else if (state.modelObject) {
     add('warn', t('check.fuelNoMesh'));
   }
@@ -2209,6 +2220,147 @@ const FUEL_MODULE_KEYS = new Set([
 
 const FUEL_SAFE_RATIO = 0.8;    // the stock tanks stay below this
 const FUEL_WARN_RATIO = 0.9;    // above this the heat model of the rocket is at risk
+
+// The values the game uses when part.json has no "thermo" block
+// (RocketPartSchema.thermoDefault). They only feed the temperature forecast.
+const THERMO_DEFAULTS = {
+  heatCapacity: 900,
+  emissivity: 0.8,
+  absorption: 0.85,
+  skinDensity: 2710,
+};
+
+const SOLAR_CONSTANT = 1361;          // W/m2 at the distance of the Earth of the game
+const STEFAN_BOLTZMANN = 5.670374419e-8;
+// Area over volume of a smooth sphere: 4*pi*r^2 / ((4/3)*pi*r^3) = 3/r
+const SPHERE_AREA_FACTOR = 4.836;
+
+// Area of the shadow the mesh casts on a plane, measured on a grid of cells
+// (the silhouette of the part toward the Sun). The game heats a part by the
+// projected area of its drag cube faces, so this is the solar input side of the
+// balance; the radiation side uses the whole baked area.
+function projectedArea(vertices, faces, min, max, resolution, axis) {
+  const uAxis = (axis + 1) % 3;
+  const vAxis = (axis + 2) % 3;
+  const cellU = (max[uAxis] - min[uAxis]) / resolution;
+  const cellV = (max[vAxis] - min[vAxis]) / resolution;
+  if (!(cellU > 0) || !(cellV > 0)) return 0;
+
+  const covered = new Uint8Array(resolution * resolution);
+
+  for (let t = 0; t < faces; t++) {
+    const o = t * 9;
+    const au = vertices[o + uAxis];
+    const av = vertices[o + vAxis];
+    const bu = vertices[o + 3 + uAxis];
+    const bv = vertices[o + 3 + vAxis];
+    const cu = vertices[o + 6 + uAxis];
+    const cv = vertices[o + 6 + vAxis];
+
+    const den = (bv - cv) * (au - cu) + (cu - bu) * (av - cv);
+    if (Math.abs(den) < 1e-12) continue;
+
+    const i0 = Math.max(0, Math.ceil((Math.min(au, bu, cu) - min[uAxis]) / cellU - 0.5));
+    const i1 = Math.min(resolution - 1, Math.floor((Math.max(au, bu, cu) - min[uAxis]) / cellU - 0.5));
+    const j0 = Math.max(0, Math.ceil((Math.min(av, bv, cv) - min[vAxis]) / cellV - 0.5));
+    const j1 = Math.min(resolution - 1, Math.floor((Math.max(av, bv, cv) - min[vAxis]) / cellV - 0.5));
+
+    for (let j = j0; j <= j1; j++) {
+      const pv = min[vAxis] + (j + 0.5) * cellV;
+      for (let i = i0; i <= i1; i++) {
+        const pu = min[uAxis] + (i + 0.5) * cellU;
+        const wA = ((bv - cv) * (pu - cu) + (cu - bu) * (pv - cv)) / den;
+        const wB = ((cv - av) * (pu - cu) + (au - cu) * (pv - cv)) / den;
+        if (wA < 0 || wB < 0 || wA + wB > 1) continue;
+        covered[j * resolution + i] = 1;
+      }
+    }
+  }
+
+  let count = 0;
+  for (let i = 0; i < covered.length; i++) count += covered[i];
+  return count * cellU * cellV;
+}
+
+// The bake counts every triangle of the meshes, including the walls hidden
+// inside a hollow model, so a tank with an inner frame radiates far more than
+// its outside surface. The game passes that baked area straight to the heat
+// model (RocketPart.cs: thermo.Add(this, partSchema.volumeData.area, ...)), and
+// the schema merge of the loader lets part.json replace it:
+// "overrides": { "volumeData": { "area": 17.6 } }.
+function thermalAreaOverride() {
+  const data = state.part.overrides && state.part.overrides.volumeData;
+  const area = data ? Number(data.area) : NaN;
+  return Number.isFinite(area) && area > 0 ? area : 0;
+}
+
+// The area the heat model will use: the override of part.json, else the bake.
+function thermalAreaOf(info) {
+  return thermalAreaOverride() || info.area;
+}
+
+function setThermalArea(area) {
+  if (!state.part.overrides || typeof state.part.overrides !== 'object') state.part.overrides = {};
+  const overrides = state.part.overrides;
+
+  if (area > 0) {
+    const data = overrides.volumeData && typeof overrides.volumeData === 'object' ? overrides.volumeData : {};
+    data.area = Math.round(area * 100) / 100;
+    overrides.volumeData = data;
+  } else if (overrides.volumeData && typeof overrides.volumeData === 'object') {
+    delete overrides.volumeData.area;
+    if (!Object.keys(overrides.volumeData).length) delete overrides.volumeData;
+  }
+
+  const box = $('f-overrides');
+  if (box && !state.jsonInvalid.overrides) {
+    box.value = JSON.stringify(state.part.overrides, null, 2);
+  }
+  renderVolumeInfo();
+  renderStatus();
+}
+
+// What the heat model of the game will do with the part, from its baked area
+// and its mass. The game radiates over the whole baked area but heats the part
+// only by the area that faces the Sun, so a mesh with many ribs or inner walls
+// (a large area over a small volume) cools even in full sunlight, and in the
+// shadow it falls towards 0 K: there is no heater and no lower clamp.
+function thermalForecast(info) {
+  const part = state.part;
+  const mass = Number(part.mass) || 0;
+  const area = info ? thermalAreaOf(info) : 0;
+  if (!info || mass <= 0 || !(info.volume > 0) || !(area > 0)) return null;
+
+  const thermo = part.thermo && typeof part.thermo === 'object' ? part.thermo : {};
+  const pick = (key) => {
+    const value = Number(thermo[key]);
+    return Number.isFinite(value) && value > 0 ? value : THERMO_DEFAULTS[key];
+  };
+  const emissivity = pick('emissivity');
+  const absorption = pick('absorption');
+  const skinDensity = pick('skinDensity');
+
+  // RocketPartSchema.ValidateAfterMerge: a skin heavier than the part is cut to
+  // a quarter of the mass.
+  const skinMass = Math.min(area * 0.0025 * skinDensity, mass * 0.25);
+  const projected = Math.max(info.projectedMax || 0, 1e-4);
+  const absorbed = SOLAR_CONSTANT * absorption * projected;
+  const kelvin = Math.pow(absorbed / (emissivity * STEFAN_BOLTZMANN * area), 0.25);
+  const ratio = area / info.volume;
+  const sphere = SPHERE_AREA_FACTOR / Math.cbrt(info.volume);
+
+  return {
+    kelvin,
+    celsius: kelvin - 273.15,
+    skinMass,
+    projected,
+    area,
+    bakedArea: info.area,
+    ratio,
+    sphere,
+    kind: kelvin < 240 ? 'error' : kelvin < 265 ? 'warn' : 'ok',
+  };
+}
 
 // Volume of the union of the meshes in the metres of the part. The inside of
 // every ray of a grid is integrated exactly, which gives the same union the SDF
@@ -2341,12 +2493,19 @@ function measureModelGeometry() {
   }
 
   const area = meshes.reduce((sum, mesh) => sum + mesh.area, 0);
+  const projectionRays = Math.max(24, Math.min(96, rays));
+  const projected = [0, 1, 2].map((projectionAxis) => projectedArea(
+    vertices, faces, min, max, projectionRays, projectionAxis,
+  ));
+
   return {
     volume: inner * cellU * cellV,
     area,
     meshes,
     faces,
     rays,
+    projected,
+    projectedMax: Math.max(...projected),
   };
 }
 
@@ -2368,10 +2527,66 @@ function fuelUnitsOf(config) {
 }
 
 // The checks and the fuel picker need the volume of the meshes. It is measured
-// once and cached; the button of the section fills the same cache.
+// once and cached; the section of the volume measures it by itself and the
+// button repeats the measurement.
+let volumeTimer = null;
+
+function invalidateVolume() {
+  if (volumeTimer) {
+    window.clearTimeout(volumeTimer);
+    volumeTimer = null;
+  }
+  state.volumeInfo = null;
+  state.volumePending = false;
+}
+
+function measureVolumeNow(report) {
+  if (!state.modelObject) {
+    state.volumeInfo = null;
+    state.volumePending = false;
+    renderVolumeInfo();
+    if (report) statusLine(t('volume.noModel'), 'warn');
+    return;
+  }
+
+  try {
+    state.volumeInfo = measureModelGeometry();
+  } catch (error) {
+    state.volumeInfo = null;
+    if (report) statusLine(t('volume.failed', { error: error.message || error }), 'bad');
+  }
+  state.volumePending = false;
+  renderVolumeInfo();
+
+  if (report && state.volumeInfo) {
+    statusLine(t('status.volumeMeasured', {
+      volume: state.volumeInfo.volume.toFixed(3),
+      area: state.volumeInfo.area.toFixed(2),
+    }), 'ok');
+  }
+}
+
+// The ray grid runs on the main thread, so the measurement of a freshly loaded
+// mesh waits a moment: the model and its info appear first, then the numbers.
+function scheduleVolumeMeasure(delay = 120) {
+  invalidateVolume();
+  if (!state.modelObject) {
+    renderVolumeInfo();
+    return;
+  }
+
+  state.volumePending = true;
+  renderVolumeInfo();
+  volumeTimer = window.setTimeout(() => {
+    volumeTimer = null;
+    measureVolumeNow(false);
+  }, delay);
+}
+
 function ensureVolumeInfo() {
   if (state.volumeInfo) return state.volumeInfo;
   if (!state.modelObject) return null;
+  invalidateVolume();
   try {
     state.volumeInfo = measureModelGeometry();
   } catch (error) {
@@ -2420,6 +2635,11 @@ function renderVolumeInfo() {
     return;
   }
 
+  if (state.volumePending) {
+    volumeRow(list, 'ok', t('volume.pending'));
+    return;
+  }
+
   const info = state.volumeInfo;
   if (!info) {
     volumeRow(list, 'ok', t('volume.ready'));
@@ -2433,6 +2653,21 @@ function renderVolumeInfo() {
   }));
   volumeRow(list, 'ok', t('volume.area', { area: info.area.toFixed(2) }));
 
+  // The heat model can use a smaller area than the bake counted (setThermalArea).
+  const overrideArea = thermalAreaOverride();
+  if (overrideArea) {
+    volumeRow(list, 'ok', t('volume.thermalAreaSet', {
+      area: overrideArea.toFixed(2),
+      baked: info.area.toFixed(2),
+    }));
+  }
+
+  const input = $('f-thermal-area');
+  if (input) {
+    input.placeholder = t('volume.thermalAreaBaked', { area: info.area.toFixed(2) });
+    if (document.activeElement !== input) input.value = overrideArea || '';
+  }
+
   if (info.meshes.length > 1) {
     const biggest = info.meshes
       .slice()
@@ -2441,6 +2676,23 @@ function renderVolumeInfo() {
       .map((mesh) => `${mesh.name} ${mesh.volume.toFixed(2)}`)
       .join(', ');
     volumeRow(list, 'ok', t('volume.meshes', { list: biggest }));
+  }
+
+  // What the heat model of the game will do with the part
+  const forecast = thermalForecast(info);
+  if (forecast) {
+    volumeRow(list, 'ok', t('volume.thermalSun', {
+      kelvin: Math.round(forecast.kelvin),
+      celsius: Math.round(forecast.celsius),
+      projected: forecast.projected.toFixed(2),
+      area: forecast.area.toFixed(1),
+    }));
+    volumeRow(list, forecast.kind, t(forecast.kind === 'ok' ? 'volume.thermalFine' : 'volume.thermalFreeze', {
+      ratio: forecast.ratio.toFixed(1),
+      sphere: forecast.sphere.toFixed(1),
+      area: forecast.area.toFixed(1),
+      mass: (Number(state.part.mass) || 0).toFixed(0),
+    }));
   }
 
   volumeRow(list, 'ok', t('volume.recommended', {
@@ -2476,6 +2728,7 @@ $('btn-measure-volume').addEventListener('click', () => {
   const label = button.textContent;
   button.disabled = true;
   button.textContent = t('volume.measuring');
+  state.volumePending = false;
   // The ray grid runs on this thread, so let the browser paint the label first.
   window.setTimeout(() => {
     try {
@@ -2496,6 +2749,26 @@ $('btn-measure-volume').addEventListener('click', () => {
       }), 'ok');
     }
   }, 0);
+});
+
+// A smooth body radiates four times its silhouette (the sphere relation), and
+// that is what the stock tanks look like to the heat model. It is the sane
+// value for a model whose hidden inner walls the bake counted as surface.
+$('btn-thermal-area-auto').addEventListener('click', () => {
+  const info = ensureVolumeInfo();
+  if (!info || !(info.projectedMax > 0)) {
+    statusLine(t('volume.noModel'), 'warn');
+    return;
+  }
+
+  const area = Math.round(info.projectedMax * 4 * 10) / 10;
+  setThermalArea(area);
+  statusLine(t('volume.thermalAreaApplied', { area: area.toFixed(1) }), 'ok');
+});
+
+$('f-thermal-area').addEventListener('input', (event) => {
+  const value = Number(event.target.value);
+  setThermalArea(Number.isFinite(value) && value > 0 ? value : 0);
 });
 
 $('btn-check').addEventListener('click', async () => {
@@ -3876,6 +4149,7 @@ function renderThermoFields() {
         delete state.part.thermo[field.key];
       }
       renderStatus();
+      if (state.modelObject) renderVolumeInfo();
     });
     cell.append(input);
     wrap.append(cell);
@@ -5416,6 +5690,8 @@ function setStatusMessage(key, vars) {
 
 function onPartEdited() {
   renderStatus();
+  // The temperature forecast follows the mass and the thermal fields
+  if (state.modelObject) renderVolumeInfo();
 }
 
 // ---------------------------------------------------------------------------

@@ -200,10 +200,26 @@ the meshes and compares it with the contents of the fuel modules: every module a
 `maxAmount / 1000` m³, and a part whose fuel fills its own volume makes the free
 volume zero, which turns the temperature of the whole rocket into NaN. The stock tanks
 fill 0.75–0.82 of their baked volume, so the tool suggests 0.8 of the measured volume
-as the safe capacity and warns above 0.9. The button prints the volume of the union,
-the surface area, the enclosed volume of the separate meshes (larger when they overlap
-or a surface is open) and the ratio of the current fuel; the ratio follows the
-`maxAmount` fields of the components, so it updates as you edit them. The fuel of the
+as the safe capacity and warns above 0.9. The section measures the mesh by itself as
+soon as it is loaded (and again when the units or the scale change), so the numbers and
+the verdicts appear without pressing the button: the volume of the union, the surface
+area, the enclosed volume of the separate meshes (larger when they overlap or a surface
+is open) and the ratio of the current fuel; the ratio follows the `maxAmount` fields of
+the components, so it updates as you edit them. The row under them repeats the heat
+model of the game and says what the temperature of the part will do: the part radiates
+with its whole baked area but catches sunlight only with the silhouette that faces the
+Sun, so the temperature it settles on in space follows from those two areas. A mesh with
+many inner walls (much more surface per m³ than a smooth sphere of the same volume)
+cools even in the sun and falls towards 0 K in the shadow — the game has no heater and
+no lower temperature clamp. **ft_spherite** is such a case: 38.4 m² of surface for
+2.35 m³, so it settles at about 233 K.
+
+**Thermal area** fixes that: the heat model of the game takes the area from the bake,
+and the loader lets `part.json` replace it (`overrides.volumeData.area`; the baked
+volume and voxels stay), so a detailed mesh can radiate like its outside surface. The
+button fills in `4 × silhouette`, the area of a smooth body, which settles at the same
+temperature as the stock parts; leaving the field empty keeps the baked area. With
+17.6 m² the tank above settles at 283 K instead of 233 K. The fuel of the
 variants is checked the same way: a fuel variant shows its own ratio in the variant
 editor, picking a propellant scales the amounts down to the safe share of the volume
 (the status bar says when it had to), and **Check the part** reports every variant

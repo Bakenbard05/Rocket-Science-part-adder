@@ -430,6 +430,24 @@ after baking, using JSON merge semantics (arrays are replaced). `defindex`,
 A failed merge is reported in the log and ignored; it never prevents the part from
 loading.
 
+The heat model of the game radiates from `volumeData.area`, which the bake computes
+as the sum of **every** triangle of the meshes. A hollow model with inner walls,
+ribs or a frame hidden inside therefore gets an area several times larger than its
+outside surface, radiates more than the Sun gives it and cools down even in
+sunlight. Such a part takes a smaller area:
+
+```json
+"overrides": {
+  "volumeData": { "area": 17.6 }
+}
+```
+
+`volume` and `voxels` stay from the bake (only `area` is replaced). The editor
+computes both numbers: the section **Volume and fuel** shows the baked area and the
+temperature the part will settle at, and the field **Thermal area** writes this
+override (`4 × silhouette`, the area of a smooth body, gives the same temperature
+as the stock parts).
+
 ## Settings
 
 An optional `PartAdder.json` next to the DLL changes the behaviour of the mod:

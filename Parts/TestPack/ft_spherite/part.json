@@ -143,19 +143,24 @@
   ],
   "modules": {
     "Model.UDMHModule": {
-      "maxAmount": 1000
+      "maxAmount": 700
     },
     "Model.N2O4Module": {
-      "maxAmount": 2000
+      "maxAmount": 1100
     }
   },
   "state": {
     "Model.UDMHModule": {
-      "amount": 1000
+      "amount": 700
     },
     "Model.N2O4Module": {
-      "amount": 2000
+      "amount": 1100
     }
   },
-  "units": "m"
+  "units": "m",
+  "overrides": {
+    "volumeData": {
+      "area": 17.6
+    }
+  }
 }
