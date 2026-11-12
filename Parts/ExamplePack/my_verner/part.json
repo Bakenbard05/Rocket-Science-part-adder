@@ -1,0 +1,73 @@
+{
+  "formatVersion": 1,
+  "id": "my_verner",
+  "name": "Verner",
+  "category": "engine",
+  "mass": 150,
+  "description": "Little tiny small engine",
+  "impactTolerance": 3,
+  "model": "Verner.obj",
+  "material": {
+    "color": "#000000",
+    "metallic": 0.9,
+    "smoothness": 0.5
+  },
+  "attachments": [
+    {
+      "id": 0,
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "shape": "single",
+      "name": "top",
+      "direction": [
+        0,
+        1,
+        0
+      ],
+      "flags": "primary",
+      "sockets": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ],
+  "modules": {
+    "Model.EngineModule": {
+      "chamberHeatTransfer": 0.02,
+      "burnTime": 180,
+      "maxThrustAsl": 25000,
+      "maxThrustVac": 29000,
+      "fuel": {
+        "type": "udmh",
+        "amount": 60
+      },
+      "oxidizer": {
+        "type": "n2o4",
+        "amount": 100
+      },
+      "throttleLimits": {
+        "x": 0.05,
+        "y": 1
+      },
+      "forcePoint": {
+        "x": 0,
+        "y": -0.5,
+        "z": 0
+      }
+    },
+    "Model.EngineGenerator": {
+      "charge": 22000
+    }
+  },
+  "state": {
+    "Model.EngineModule": {
+      "thrustLimiter": 1
+    }
+  }
+}

@@ -1,0 +1,35 @@
+# 1 x 1 x 1 m cube, origin at the centre.
+# Written in metres, Y is up, Z is forward (Unity convention).
+o example_block
+v -0.5 -0.5 -0.5
+v 0.5 -0.5 -0.5
+v 0.5 0.5 -0.5
+v -0.5 0.5 -0.5
+v -0.5 -0.5 0.5
+v 0.5 -0.5 0.5
+v 0.5 0.5 0.5
+v -0.5 0.5 0.5
+vn 0 0 -1
+vn 0 0 1
+vn -1 0 0
+vn 1 0 0
+vn 0 1 0
+vn 0 -1 0
+# back (-Z)
+f 2//1 1//1 4//1
+f 2//1 4//1 3//1
+# front (+Z)
+f 5//2 6//2 7//2
+f 5//2 7//2 8//2
+# left (-X)
+f 1//3 5//3 8//3
+f 1//3 8//3 4//3
+# right (+X)
+f 6//4 2//4 3//4
+f 6//4 3//4 7//4
+# top (+Y)
+f 4//5 8//5 7//5
+f 4//5 7//5 3//5
+# bottom (-Y)
+f 1//6 2//6 6//6
+f 1//6 6//6 5//6

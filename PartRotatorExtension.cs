@@ -1,27 +1,116 @@
 ﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using UnbeGames.API;
-using UnbeGames.Controller;
 using UnbeGames.Model;
+using UnbeGames.Mods;
 using UnbeGames.Services;
 using UnbeGames.Support;
-using UnbeGames.UI;
+using Unity.Entities.UniversalDelegates;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace PartRotatorExtension
 {
+    public struct Socket
+    {
+        public uint id;
+        public Vector3 position;
+        public Vector3 slotDirection;
+        public Quaternion slotRotation;
+        public string slotShape;
+    }
     public struct SinglePartData
     {
         public string configFilePath;
+        public string modelFilePath;
+        public string physicsColliderFilePath;
+
+        public Socket[] sockets;
+        public JObject config;
+        public JObject state;
+        public JToken variantsConfig;
     }
+
     public struct PartDataList
     {
         public SinglePartData[] partDataList;
+    }
+
+
+    public static class RPCExt
+    {
+        public static async Task TryPostprocess(this RocketPartCache rocketPartCache, TextAsset resource, Dictionary<string, GameObject> mapping, RocketPartBaker baker, GameObject model)
+        {
+            RocketPartSchema schemaItem = null;
+            try
+            {
+                schemaItem = JsonConvert.DeserializeObject<RocketPartSchema>(resource.text);
+                var schemaItems = typeof(SchemaCache<RocketPartSchema>).GetField("schemaItems", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rocketPartCache) as Dictionary<int, RocketPartSchema>;
+                var parts = typeof(RocketPartCache).GetField("parts", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rocketPartCache) as Dictionary<int, GameObject>;
+                var postprocessData = typeof(RocketPartCache).GetField("postprocessData", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rocketPartCache) as Dictionary<int, PostprocessPartData>;
+
+                schemaItems.Add(schemaItem.defindex, schemaItem);
+                string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(schemaItem.prefabName);
+
+                parts.Add(schemaItem.defindex, mapping[fileNameWithoutExtension]);
+
+                if (postprocessData.ContainsKey(schemaItem.defindex))
+                {
+                    schemaItem.Merge(postprocessData[schemaItem.defindex]);
+                    return;
+                }
+
+                GameObject gameObject = parts[schemaItem.defindex];
+                PostprocessPartData data = new PostprocessPartData
+                {
+                    slotPositions = new List<AttachmentData>(),
+                    cableAttachments = new List<CableAttachmentData>()
+                };
+
+                GameObject prefabInstance = UnityEngine.Object.Instantiate(gameObject);
+                prefabInstance.name = gameObject.name;
+
+                MethodInfo MI_GetModelName = typeof(RocketPartSchema).GetMethod("GetModelName", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                string modelName = MI_GetModelName.Invoke(schemaItem, new object[] { }) as string;
+
+                GameObject obj = model;
+                obj.name = "model";
+                obj.transform.SetAsFirstSibling();
+                RocketPartBaker.BakePartVolume(obj, modelName, ref data.volumeData);
+                RocketPartBaker.ProcessConnections(prefabInstance, ref data);
+                RocketPartBaker.ProcessCableAttachments(prefabInstance, ref data);
+                RocketPartBaker.ProcessAssemblyCollider(prefabInstance, ref data.assemblyCollider);
+                RocketPartBaker.ProcessCenterOfMass(prefabInstance, ref data.centerOfMass, schemaItem.centerOfMassAdjustment);
+                baker.Bake(prefabInstance, ref data.dragData, AABBExtensions.ToBounds(data.volumeData.bounds), data.centerOfMass);
+                if (schemaItem.config != null && schemaItem.HasPhysicsStateConfigs())
+                {
+                    string[] stateNames = schemaItem.GetStateNames();
+                    baker.ProcessStates(prefabInstance, ref data, stateNames);
+                }
+
+                if (schemaItem.config != null && schemaItem.HasPartStateConfig())
+                {
+                    baker.ProcessStateTransitions(prefabInstance, ref data, schemaItem.GetPartStateConfig());
+                }
+
+                postprocessData.Add(schemaItem.defindex, data);
+                schemaItem.Merge(data);
+                prefabInstance.SetActive(false);
+                UnityEngine.Object.Destroy(prefabInstance);
+                RocketPartCache.OnPartProcessed?.Invoke(schemaItem.prefabName);
+            }
+            catch (Exception e)
+            {
+                Log.Exception("Error on postprocessing: " + schemaItem?.prefabName, e);
+            }
+        }
     }
 
     public class PartRotatorExtension : BaseExtension
@@ -30,117 +119,25 @@ namespace PartRotatorExtension
 
         public PartRotatorExtension()
         {
+
+
         }
 
-        public override async void OnStart()
+        public override void OnStart()
         {
             Log.Info($"Game systems fully initialized.");
 
-            await LoadAssets();
-            
-
-
-            
-
-            var rocketPartCache = CacheStore.Get<RocketPartCache>();
-            var partsCache = typeof(RocketPartCache).GetField("parts", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(rocketPartCache) as Dictionary<int, GameObject>;
-            var schemaCache = typeof(RocketPartCache).GetField("schemaItems", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rocketPartCache) as Dictionary<int, RocketPartSchema>;
-
-            //var MI_Preloadig = typeof(RocketPartCache).GetMethod("Prealoading", BindingFlags.Instance | BindingFlags.NonPublic);
-            var MI_TryPostProcss = typeof(RocketPartCache).GetMethod("TryPostprocess", BindingFlags.Instance | BindingFlags.NonPublic);
-
-            
-            //var rpcBaker = typeof(RocketPartCache).GetField("baker", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rocketPartCache) as RocketPartBaker;
-
-            //var MI_CreateAeroCamera = typeof(RocketPartBaker).GetMethod("CreateAeroCamera", BindingFlags.Instance | BindingFlags.NonPublic);
-            //var MI_CreateAeroTextures = typeof(RocketPartBaker).GetMethod("CreateAeroTextures", BindingFlags.Instance | BindingFlags.NonPublic);
-
-
-
-            var bakerPrefab = CacheStore.prefabs.Get("drag_cube_baker");
-            var baker = Helpers.Instantiate< RocketPartBaker>(bakerPrefab);
-            typeof(RocketPartCache).GetField("baker", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(rocketPartCache, baker);
-            var rpcBaker = typeof(RocketPartCache).GetField("baker", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rocketPartCache);
-
-            //MI_CreateAeroTextures.Invoke(rpcBaker, new object[] { });
-            //MI_CreateAeroCamera.Invoke(rpcBaker, new object[] { });
-
-            //var aeroCamera = typeof(RocketPartBaker).GetField("aeroCamera", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rpcBaker) as Camera;
-            //var aeroTexture = typeof(RocketPartBaker).GetField("aeroTexture", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rpcBaker) as Texture2D;
-            //var resolution = (int)typeof(RocketPartBaker).GetField("resolution", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(rpcBaker);
-
-            //Console.Write("aeroCamera name: " + aeroCamera.name);
-            //Console.Write("aeroTexture: " + aeroTexture.isReadable);
-            //Console.Write("resolution: " + resolution);
-
-          
-
-
-            // TODO get path to mod folder
-            var currPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            var dirs = Directory.GetDirectories(Path.Combine(currPath, "Modded Parts"));
-
-            foreach(var dir in dirs)
+            try
             {
-                string partListFile = await File.ReadAllTextAsync(Path.Combine(dir, "partList.json"));
-                PartDataList partDataList = JsonConvert.DeserializeObject<PartDataList>(partListFile);
-                foreach(var partData in partDataList.partDataList)
-                {
-                    Console.Write("Loading part" + partData.configFilePath);
-                    var schema = await AddressableHelper.LoadAssetAsync<TextAsset>(partData.configFilePath);
-                    var schemaJson = JsonConvert.DeserializeObject<RocketPartSchema>(schema.text);
-                    var dic = new Dictionary<string, GameObject>();
-                    var partPrefab = await AddressableHelper.InstantiateAsync(schemaJson.prefabName);
-                    partPrefab.name = partPrefab.name.Replace("(Clone)", "");
-                    dic.Add(partPrefab.name, partPrefab);
-                    var task = (Task)MI_TryPostProcss.Invoke(rocketPartCache, new object[] { schema, dic });
-                    await task;
-                }
+                PartLoader.PartLoader.LoadAll();
+                // The reentry material is preloaded in the background; if it is already there,
+                // the shells can use it right away.
+                PartLoader.PartLoader.ApplyReentryMaterial();
             }
-
-            Object.Destroy(baker);
-
-            var all = rocketPartCache.All().Where(schemaItem => schemaItem.category == PartCategory.aero);
-            var s = "";
-
-            foreach (var item in all)
+            catch (Exception e)
             {
-                s += JsonConvert.SerializeObject(item) + '\n';
+                Log.Exception("[PartAdder] Fatal error while loading custom parts", e);
             }
-
-            File.WriteAllText("./AllAeroItems.txt", s);
-            all = rocketPartCache.All().Where(schemaItem => schemaItem.category == PartCategory.adapter);
-            s = "";
-            foreach (var item in all)
-            {
-                s += JsonConvert.SerializeObject(item) + '\n';
-            }
-            File.WriteAllText("./AllAdapters.txt", s);
-
-            all = rocketPartCache.All().Where(schemaItem => schemaItem.category == PartCategory.thermal);
-            s = "";
-            foreach (var item in all)
-            {
-                s += JsonConvert.SerializeObject(item) + '\n';
-            }
-            File.WriteAllText("./AllThermal.txt", s);
-
-
-            //List<TextAsset> schemesToLoad = new List<TextAsset>
-            //{
-            //    schema
-            //};
-
-            ////MI_Preloadig.Invoke(rocketPartCache, new object[] { schemesToLoad });
-
-            //var partSchema = JsonConvert.DeserializeObject<RocketPartSchema>(File.ReadAllText("./partSchema.json"));
-            //var partPrefab = await AddressableHelper.InstantiateAsync(partSchema.prefabName);
-
-            //partsCache[partSchema.defindex] = partPrefab;
-            //schemaCache[partSchema.defindex] = partSchema;
-
-            //Console.Write("Part " + partSchema.name + " was added");
-            //Console.Write();
         }
 
         public override void OnEnable()
@@ -165,32 +162,35 @@ namespace PartRotatorExtension
 
         public override void Update()
         {
-            base.Update();
-            var asc = Finders.ComponentByTag<AssemblyShopController>(Tag.assemblyShopController, false);
-            var app = Finders.ComponentByTag<UnbeGames.Controller.Application>(Tag.application, false);
+            // The shells wait for the reentry material of the game, which arrives with the
+            // asynchronous preload of the prefab cache.
+            PartLoader.PartLoader.ApplyReentryMaterial();
 
-            if (asc != null && !partAdded)
-            {
-                //var parts = typeof(AssemblyShopController).GetField("parts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(asc) as AssemblyParts;
-                //var partList = typeof(AssemblyParts).GetField("parts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(parts) as List<AssemblyPartItem>;
-                var MI_AddPart = typeof(AssemblyParts).GetMethod("AddPart", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                //var partSchema = Clone(partList.ElementAt(0).part);
+            //base.Update();
+            //var asc = Finders.ComponentByTag<AssemblyShopController>(Tag.assemblyShopController, false);
+            //var app = Finders.ComponentByTag<UnbeGames.Controller.Application>(Tag.application, false);
 
-                //var originalPartDefIndex = partSchema.defindex;
+            //if (asc != null && !partAdded)
+            //{
+            //    //var parts = typeof(AssemblyShopController).GetField("parts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(asc) as AssemblyParts;
+            //    //var partList = typeof(AssemblyParts).GetField("parts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(parts) as List<AssemblyPartItem>;
+            //    var MI_AddPart = typeof(AssemblyParts).GetMethod("AddPart", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            //    //var partSchema = Clone(partList.ElementAt(0).part);
+            //    var parts = asc.module.selectedRocket.parts;
+            //    //var originalPartDefIndex = partSchema.defindex;
 
-                //partSchema.defindex = 1001;
-                //Console.Write("Part name: " + partSchema.name);
-                //partSchema.name = "Part Test";
-                //MI_AddPart.Invoke(parts, new object[]{ partSchema });
+            //    //partSchema.defindex = 1001;
+            //    //Console.Write("Part name: " + partSchema.name);
+            //    //partSchema.name = "Part Test";
+            //    //MI_AddPart.Invoke(parts, new object[]{ partSchema });
 
 
-                //var filter = asc.module.filter;
-                //asc.module.SetFilter(null);
-                //asc.module.SetFilter(filter);
-
-                partAdded = true;
-                //Console.Write("Part " + partSchema.name + " was added");
-            }
+            //    //var filter = asc.module.filter;
+            //    //asc.module.SetFilter(null);
+            //    //asc.module.SetFilter(filter);
+            //    partAdded = true;
+            //    //Console.Write("Part " + partSchema.name + " was added");
+            //}
 
         }
 
@@ -215,7 +215,7 @@ namespace PartRotatorExtension
                     catalogFile = catalogFile.Replace(needToReplace, replacement);
                     await File.WriteAllTextAsync(Path.Combine(dir, "catalog.json"), catalogFile);
                     await AddressableHelper.LoadContentCatalog(Path.Combine(dir, "catalog.json"));
-                    Console.Write("Loaded content catalog with path " + Path.Combine(dir, "catalog.json"));
+                    UnbeGames.Services.Console.Write("Loaded content catalog with path " + Path.Combine(dir, "catalog.json"));
                 }
                 catch (System.Exception ex)
                 {
@@ -232,5 +232,6 @@ namespace PartRotatorExtension
         }
 
 
+        
     }
 }

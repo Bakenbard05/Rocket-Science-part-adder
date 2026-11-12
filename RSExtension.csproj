@@ -2,10 +2,18 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
-		<GamePath>E:\SteamLibrary\steamapps\common\HDYLIEM</GamePath>
+		<GamePath>E:\SteamLibrary\steamapps\common\Rocket Science</GamePath>
 		<AssemblyPath>\Rocket Science_Data\Managed</AssemblyPath>
 		<Nullable>disable</Nullable>
   </PropertyGroup>
+
+  <!-- Game/Unity assemblies must not be copied next to the mod DLL: the game already
+       loads its own copies, and shipping duplicates breaks extension loading. -->
+  <ItemDefinitionGroup>
+    <Reference>
+      <Private>false</Private>
+    </Reference>
+  </ItemDefinitionGroup>
 
   <ItemGroup>
 		<Reference Include="Assembly-CSharp">
@@ -31,6 +39,9 @@
 		</Reference>
 		<Reference Include="Unbegames.Model">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Model.dll</HintPath>
+		</Reference>
+		<Reference Include="Unbegames.Mods">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Mods.dll</HintPath>
 		</Reference>
 		<Reference Include="Unbegames.Services">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unbegames.Services.dll</HintPath>
@@ -74,6 +85,12 @@
 		<Reference Include="Unity.Mathematics">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Mathematics.dll</HintPath>
 		</Reference>
+		<Reference Include="Unity.Mathematics.Extensions">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Mathematics.Extensions.dll</HintPath>
+		</Reference>
+		<Reference Include="Unity.Mathematics.Extensions.Hybrid">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.Mathematics.Extensions.Hybrid.dll</HintPath>
+		</Reference>
 		<Reference Include="Unity.RenderPipelines.Core.Runtime">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\Unity.RenderPipelines.Core.Runtime.dll</HintPath>
 		</Reference>
@@ -95,9 +112,20 @@
 		<Reference Include="UnityEngine.IMGUIModule">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
 		</Reference>
+		<Reference Include="UnityEngine.ImageConversionModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
+		</Reference>
 		<Reference Include="UnityEngine.PhysicsModule">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
 		</Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Author content ships next to the DLL: the loader reads <mod folder>/Parts/... -->
+    <None Update="Parts\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="config.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="preview.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="docs\**\*" CopyToOutputDirectory="Never" />
   </ItemGroup>
 
 </Project>

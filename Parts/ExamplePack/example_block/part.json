@@ -1,0 +1,40 @@
+{
+  "$schema": "../../../docs/part.schema.json",
+  "formatVersion": 1,
+  "id": "example_block",
+  "name": "Example Block",
+  "description": "A 1 m structural cube shipped with PartAdder as a reference part.",
+  "category": "structure",
+  "mass": 100,
+  "tags": ["example"],
+  "impactTolerance": 10,
+
+  "model": "model.obj",
+  "units": "m",
+
+  "material": {
+    "color": "#B9BEC4",
+    "metallic": 0.25,
+    "smoothness": 0.45
+  },
+
+  "attachments": [
+    {
+      "id": 0,
+      "name": "top",
+      "position": [0, 0.5, 0],
+      "direction": "up",
+      "shape": "single"
+    },
+    {
+      "id": 1,
+      "name": "bottom",
+      "position": [0, -0.5, 0],
+      "direction": "down",
+      "shape": "single"
+    }
+  ],
+
+  "modules": {},
+  "state": {}
+}

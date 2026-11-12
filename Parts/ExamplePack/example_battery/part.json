@@ -1,0 +1,48 @@
+{
+  "$schema": "../../../docs/part.schema.json",
+  "formatVersion": 1,
+  "id": "example_battery",
+  "name": "Example Battery",
+  "description": "A 1.0 x 1.2 m battery with 2 MJ of storage and dual attachment plates.",
+  "category": "electricity",
+  "mass": 40,
+  "tags": ["example", "battery"],
+  "impactTolerance": 10,
+
+  "model": "model.obj",
+  "units": "m",
+
+  "material": {
+    "color": "#4C6FA5",
+    "metallic": 0.4,
+    "smoothness": 0.55
+  },
+
+  "attachments": [
+    {
+      "id": 0,
+      "name": "top",
+      "position": [0, 0.6, 0],
+      "direction": "up",
+      "shape": "dual"
+    },
+    {
+      "id": 1,
+      "name": "bottom",
+      "position": [0, -0.6, 0],
+      "direction": "down",
+      "shape": "dual"
+    }
+  ],
+
+  "modules": {
+    "Model.ElectricityModule": {
+      "maxAmount": 2000000
+    }
+  },
+  "state": {
+    "Model.ElectricityModule": {
+      "amount": 2000000
+    }
+  }
+}

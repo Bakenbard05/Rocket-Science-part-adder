@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PartAdder Part Editor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1 id="page-title">PartAdder Part Editor</h1>
+    <p class="subtitle" data-i18n="subtitle"></p>
+  </div>
+  <div class="topbar-actions">
+    <label class="lang">
+      <span data-i18n="example.label"></span>
+      <select id="example-select"></select>
+    </label>
+    <button id="btn-load-example" class="btn" data-i18n="btn.loadExample"></button>
+    <button id="btn-new" class="btn" data-i18n="btn.new"></button>
+    <label class="btn" for="file-json" data-i18n="btn.importJson"></label>
+    <input id="file-json" type="file" accept=".json,application/json" hidden>
+    <button id="btn-copy" class="btn" data-i18n="btn.copy"></button>
+    <button id="btn-download" class="btn primary" data-i18n="btn.download"></button>
+    <label class="lang">
+      <span data-i18n="lang"></span>
+      <select id="lang-select">
+        <option value="en">English</option>
+        <option value="ru">Русский</option>
+      </select>
+    </label>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="panel panel-left">
+    <section class="group">
+      <h2 data-i18n="section.part"></h2>
+      <div class="field">
+        <label for="f-id" data-i18n="field.id"></label>
+        <input id="f-id" type="text" autocapitalize="off" autocomplete="off" spellcheck="false">
+        <small data-i18n="field.id.hint"></small>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-name" data-i18n="field.name"></label>
+          <input id="f-name" type="text">
+        </div>
+        <div class="field">
+          <label for="f-category" data-i18n="field.category"></label>
+          <select id="f-category"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="f-description" data-i18n="field.description"></label>
+        <textarea id="f-description" rows="2"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-mass" data-i18n="field.mass"></label>
+          <input id="f-mass" type="number" min="0" step="0.1">
+        </div>
+        <div class="field">
+          <label for="f-impact" data-i18n="field.impactTolerance"></label>
+          <input id="f-impact" type="number" min="0" step="1">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-assembly" data-i18n="field.assemblyPosition"></label>
+          <input id="f-assembly" type="number" step="1">
+        </div>
+        <div class="field">
+          <label for="f-defindex" data-i18n="field.defindex"></label>
+          <input id="f-defindex" type="number" min="1" step="1">
+        </div>
+      </div>
+      <div class="field">
+        <label for="f-tags" data-i18n="field.tags"></label>
+        <input id="f-tags" type="text">
+      </div>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.model"></h2>
+      <div class="field">
+        <label for="f-model" data-i18n="field.model"></label>
+        <div class="input-row">
+          <input id="f-model" type="text" spellcheck="false">
+          <label class="btn small" for="file-model" data-i18n="btn.loadModel"></label>
+          <input id="file-model" type="file" accept=".obj,.glb,.gltf,.stl,.ply,.fbx,.dae,.mtl,.png,.jpg,.jpeg,.tga,.bmp" multiple hidden>
+        </div>
+        <small data-i18n="hint.modelFiles"></small>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-units" data-i18n="field.units"></label>
+          <select id="f-units"></select>
+        </div>
+        <div class="field">
+          <label for="f-scale" data-i18n="field.scale"></label>
+          <input id="f-scale" type="number" min="0" step="0.01">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-physics" data-i18n="field.physicsModel"></label>
+          <input id="f-physics" type="text" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="f-icon" data-i18n="field.icon"></label>
+          <input id="f-icon" type="text" spellcheck="false">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field color-field">
+          <label for="f-color" data-i18n="field.color"></label>
+          <input id="f-color" type="color">
+        </div>
+        <div class="field">
+          <label for="f-metallic" data-i18n="field.metallic"></label>
+          <input id="f-metallic" type="number" min="0" max="1" step="0.05">
+        </div>
+        <div class="field">
+          <label for="f-smoothness" data-i18n="field.smoothness"></label>
+          <input id="f-smoothness" type="number" min="0" max="1" step="0.05">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field color-field">
+          <label for="f-emissive" data-i18n="field.emissive"></label>
+          <input id="f-emissive" type="color">
+        </div>
+        <div class="field">
+          <label for="f-emissive-intensity" data-i18n="field.emissiveIntensity"></label>
+          <input id="f-emissive-intensity" type="number" min="0" step="0.1">
+        </div>
+        <div class="field">
+          <label for="f-opacity" data-i18n="field.opacity"></label>
+          <input id="f-opacity" type="number" min="0" max="1" step="0.05">
+        </div>
+      </div>
+      <label class="check"><input id="chk-material" type="checkbox" checked> <span data-i18n="view.material"></span></label>
+      <label class="check"><input id="chk-wireframe" type="checkbox"> <span data-i18n="view.wireframe"></span></label>
+      <div class="field">
+        <label for="f-explode" data-i18n="field.explode"></label>
+        <input id="f-explode" type="range" min="0" max="1" step="0.01" value="0">
+      </div>
+      <label class="check"><input id="chk-reentry" type="checkbox"> <span data-i18n="view.reentry"></span></label>
+      <p class="hint" data-i18n="hint.reentry"></p>
+      <p class="hint" id="model-info"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.volume"></h2>
+      <button id="btn-measure-volume" class="btn small" data-i18n="btn.measureVolume"></button>
+      <div id="volume-info" class="compact-list"></div>
+      <p class="hint" data-i18n="hint.volume"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.textures"></h2>
+      <div class="field">
+        <label for="f-albedo" data-i18n="field.albedo"></label>
+        <div class="input-row">
+          <input id="f-albedo" type="text" spellcheck="false">
+          <label class="btn small" for="file-albedo" data-i18n="btn.pick"></label>
+          <input id="file-albedo" type="file" accept=".png,.jpg,.jpeg,.tga,.bmp" hidden>
+          <button class="icon-btn" id="btn-clear-albedo" data-i18n-title="btn.clearTexture">✕</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="f-normal" data-i18n="field.normal"></label>
+        <div class="input-row">
+          <input id="f-normal" type="text" spellcheck="false">
+          <label class="btn small" for="file-normal" data-i18n="btn.pick"></label>
+          <input id="file-normal" type="file" accept=".png,.jpg,.jpeg,.tga,.bmp" hidden>
+          <button class="icon-btn" id="btn-clear-normal" data-i18n-title="btn.clearTexture">✕</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="f-mask" data-i18n="field.mask"></label>
+        <div class="input-row">
+          <input id="f-mask" type="text" spellcheck="false">
+          <label class="btn small" for="file-mask" data-i18n="btn.pick"></label>
+          <input id="file-mask" type="file" accept=".png,.jpg,.jpeg,.tga,.bmp" hidden>
+          <button class="icon-btn" id="btn-clear-mask" data-i18n-title="btn.clearTexture">✕</button>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-tiling" data-i18n="field.tiling"></label>
+          <input id="f-tiling" type="text" placeholder="1, 1" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="f-offset" data-i18n="field.offset"></label>
+          <input id="f-offset" type="text" placeholder="0, 0" spellcheck="false">
+        </div>
+      </div>
+      <p class="hint" data-i18n="hint.textures"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.nodeMaterials"></h2>
+      <div class="input-row">
+        <select id="node-material-select"></select>
+        <button id="btn-add-node-material" class="btn small" data-i18n="btn.addMaterial"></button>
+      </div>
+      <div id="node-material-list" class="compact-list"></div>
+      <p class="hint" data-i18n="hint.nodeMaterials"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.animations"></h2>
+      <div class="input-row">
+        <select id="animation-node-select"></select>
+        <button id="btn-add-animation" class="btn small" data-i18n="btn.addAnimation"></button>
+      </div>
+      <div class="input-row">
+        <button id="btn-anim-play" class="btn small" data-i18n="anim.play"></button>
+        <button id="btn-anim-reset" class="btn small" data-i18n="anim.reset"></button>
+        <span class="anim-time" id="anim-time">0.00 s</span>
+      </div>
+      <div class="field">
+        <label for="anim-scrub" data-i18n="anim.scrub"></label>
+        <input id="anim-scrub" type="range" min="0" max="10" step="0.01" value="0">
+      </div>
+      <div id="animation-list" class="compact-list"></div>
+      <button id="btn-add-tracking" class="btn small" data-i18n="btn.addTracking"></button>
+      <p class="hint" data-i18n="hint.animations"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.engineEffects"></h2>
+      <div id="engine-effects"></div>
+      <label class="check"><input id="chk-flame" type="checkbox"> <span data-i18n="view.flamePreview"></span></label>
+      <div class="field">
+        <label for="f-throttle" data-i18n="field.throttle"></label>
+        <input id="f-throttle" type="range" min="0" max="100" step="1" value="100">
+      </div>
+      <div class="field">
+        <label for="f-sound-file" data-i18n="field.soundFile"></label>
+        <div class="input-row">
+          <input id="f-sound-file" type="text" spellcheck="false" readonly>
+          <label class="btn small" for="file-sound" data-i18n="btn.pick"></label>
+          <input id="file-sound" type="file" accept=".wav,.ogg,.mp3,.m4a" hidden>
+          <button class="icon-btn" id="btn-sound-play" data-i18n-title="btn.playSound">▶</button>
+        </div>
+      </div>
+      <p class="hint" data-i18n="hint.engineEffects"></p>
+      <p class="hint" data-i18n="hint.flamePreview"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.check"></h2>
+      <button id="btn-check" class="btn small" data-i18n="btn.check"></button>
+      <div id="check-list" class="compact-list"></div>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.export"></h2>
+      <div class="field">
+        <label for="export-pack-name" data-i18n="field.packName"></label>
+        <input id="export-pack-name" type="text" spellcheck="false" placeholder="MyPack">
+      </div>
+      <div class="field">
+        <label for="export-part-name" data-i18n="field.partFolder"></label>
+        <input id="export-part-name" type="text" spellcheck="false" placeholder="my_part">
+      </div>
+      <div class="field">
+        <label data-i18n="field.packParts"></label>
+        <div id="export-parts" class="compact-list"></div>
+      </div>
+      <button id="btn-export-pack" class="btn small" data-i18n="btn.exportPack"></button>
+      <button id="btn-export-gallery" class="btn small" data-i18n="btn.exportGallery"></button>
+      <p class="hint" data-i18n="hint.export"></p>
+      <p class="hint" data-i18n="hint.gallery"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.stock"></h2>
+      <div class="input-row">
+        <select id="stock-select"></select>
+        <button id="btn-import-stock" class="btn small" data-i18n="btn.importStock"></button>
+      </div>
+      <p class="hint" data-i18n="hint.stock"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.library"></h2>
+      <div class="input-row">
+        <input id="library-name" type="text" spellcheck="false" placeholder="Part name">
+        <button id="btn-save-library" class="btn small" data-i18n="btn.save"></button>
+      </div>
+      <div id="library-list" class="compact-list"></div>
+      <div class="field-row">
+        <div class="field">
+          <label for="library-stack" data-i18n="field.stackPartner"></label>
+          <select id="library-stack"></select>
+        </div>
+      </div>
+      <p class="hint" id="stack-info"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.variants"></h2>
+      <div class="input-row">
+        <select id="variant-select"></select>
+        <button id="btn-add-variant" class="btn small" data-i18n="btn.addVariant"></button>
+      </div>
+      <div id="variant-list" class="compact-list"></div>
+      <p class="hint" data-i18n="hint.variants"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.components"></h2>
+      <div class="input-row">
+        <select id="component-select"></select>
+        <button id="btn-add-component" class="btn small" data-i18n="btn.addComponent"></button>
+      </div>
+      <div id="component-list" class="compact-list"></div>
+    </section>
+
+    <section class="group">
+      <h2><span data-i18n="section.cables"></span></h2>
+      <div id="cable-list" class="compact-list"></div>
+      <button id="btn-add-cable" class="btn small" data-i18n="btn.addCable"></button>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.thermo"></h2>
+      <p class="hint" data-i18n="hint.thermo"></p>
+      <div id="thermo-fields" class="thermo-grid"></div>
+    </section>
+
+    <details class="group advanced">
+      <summary data-i18n="section.advanced"></summary>
+      <div class="field">
+        <label for="f-modules" data-i18n="field.modules"></label>
+        <textarea id="f-modules" rows="6" spellcheck="false" class="code"></textarea>
+      </div>
+      <div class="field">
+        <label for="f-state" data-i18n="field.state"></label>
+        <textarea id="f-state" rows="4" spellcheck="false" class="code"></textarea>
+      </div>
+      <div class="field">
+        <label for="f-overrides" data-i18n="field.overrides"></label>
+        <textarea id="f-overrides" rows="4" spellcheck="false" class="code"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label data-i18n="field.centerOfMass"></label>
+          <div class="vec3" id="com-fields">
+            <input type="number" step="0.01" data-axis="0" aria-label="x">
+            <input type="number" step="0.01" data-axis="1" aria-label="y">
+            <input type="number" step="0.01" data-axis="2" aria-label="z">
+          </div>
+        </div>
+        <div class="field">
+          <label for="f-radial" data-i18n="field.radialSnapping"></label>
+          <input id="f-radial" type="number" min="0" step="1">
+        </div>
+      </div>
+    </details>
+  </aside>
+
+  <div class="splitter" id="splitter-left" role="separator" aria-orientation="vertical"></div>
+
+  <section class="viewport-wrap">
+    <canvas id="viewport"></canvas>
+    <div class="viewport-hint" id="drop-hint" data-i18n="hint.drop"></div>
+    <div class="viewport-overlay">
+      <button id="btn-fit" class="btn small" data-i18n="btn.fit"></button>
+      <label class="check"><input id="chk-labels" type="checkbox" checked> <span data-i18n="view.labels"></span></label>
+      <label class="check"><input id="chk-grid" type="checkbox" checked> <span data-i18n="view.grid"></span></label>
+      <label class="check"><input id="chk-snap" type="checkbox"> <span data-i18n="view.snap"></span></label>
+    </div>
+    <div class="viewport-axes" data-i18n="hint.axes"></div>
+  </section>
+
+  <div class="splitter" id="splitter-right" role="separator" aria-orientation="vertical"></div>
+
+  <aside class="panel panel-right">
+    <section class="group">
+      <div class="group-head">
+        <h2 data-i18n="section.attachments"></h2>
+        <button id="btn-add-attachment" class="btn small" data-i18n="btn.addAttachment"></button>
+      </div>
+      <div id="attachment-list" class="attachment-list"></div>
+      <p class="hint" id="select-hint" data-i18n="hint.selectHint"></p>
+    </section>
+    <section class="group">
+      <h2 data-i18n="section.attachment"></h2>
+      <div id="attachment-editor"></div>
+    </section>
+  </aside>
+</main>
+
+<footer class="statusbar">
+  <div id="status-main" class="status-main"></div>
+  <ul id="status-messages" class="status-messages"></ul>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

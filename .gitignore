@@ -224,3 +224,11 @@ AppPackages/
 #####
 # End of core ignore list, below put you custom 'per project' settings (patterns or path)
 #####
+# PartAdder example meshes are .obj files and must be committed
+!Parts/**/*.obj
+!Parts/**/*.OBJ
+!tools/part-editor/assets/*.obj
+
+# Local deploy/packaging output
+dist/
+

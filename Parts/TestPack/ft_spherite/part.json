@@ -1,0 +1,161 @@
+{
+  "formatVersion": 1,
+  "id": "ft_spherite",
+  "name": "\"Spherite\" Fuelt Tank",
+  "category": "fuelTank",
+  "mass": 200,
+  "impactTolerance": 10,
+  "model": "model.obj",
+  "material": {
+    "color": "#c8ccd4",
+    "metallic": 0.2,
+    "smoothness": 0.4
+  },
+  "materials": [
+    {
+      "node": "model/Frame",
+      "color": "#c8ccd4",
+      "metallic": 0.8,
+      "smoothness": 0.4,
+      "albedo": "Texturelabs_Metal_282M.jpg"
+    },
+    {
+      "node": "model/Tanks.002",
+      "color": "#c8ccd4",
+      "metallic": 0.8,
+      "smoothness": 0.6,
+      "albedo": "Texturelabs_Metal_278M.jpg"
+    },
+    {
+      "node": "model/Tank_Central",
+      "color": "#c8ccd4",
+      "metallic": 0.8,
+      "smoothness": 0.6,
+      "albedo": "Texturelabs_Metal_278M.jpg"
+    }
+  ],
+  "attachments": [
+    {
+      "id": 0,
+      "position": [
+        0,
+        1,
+        0
+      ],
+      "shape": "heptahedron",
+      "name": "top",
+      "direction": [
+        0,
+        1,
+        0
+      ],
+      "sockets": [
+        [
+          0,
+          0,
+          0.7
+        ],
+        [
+          -0.6062,
+          0,
+          0.35
+        ],
+        [
+          -0.6062,
+          0,
+          -0.35
+        ],
+        [
+          0,
+          0,
+          -0.7
+        ],
+        [
+          0.6062,
+          0,
+          -0.35
+        ],
+        [
+          0.6062,
+          0,
+          0.35
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "id": 1,
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "shape": "heptahedron",
+      "name": "bottom",
+      "direction": [
+        0,
+        -1,
+        0
+      ],
+      "flags": "primary",
+      "sockets": [
+        [
+          0,
+          0,
+          0.7
+        ],
+        [
+          -0.6062,
+          0,
+          0.35
+        ],
+        [
+          -0.6062,
+          0,
+          -0.35
+        ],
+        [
+          0,
+          0,
+          -0.7
+        ],
+        [
+          0.6062,
+          0,
+          -0.35
+        ],
+        [
+          0.6062,
+          0,
+          0.35
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ],
+  "modules": {
+    "Model.UDMHModule": {
+      "maxAmount": 1000
+    },
+    "Model.N2O4Module": {
+      "maxAmount": 2000
+    }
+  },
+  "state": {
+    "Model.UDMHModule": {
+      "amount": 1000
+    },
+    "Model.N2O4Module": {
+      "amount": 2000
+    }
+  },
+  "units": "m"
+}

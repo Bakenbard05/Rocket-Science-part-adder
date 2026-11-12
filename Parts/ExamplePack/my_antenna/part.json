@@ -1,0 +1,114 @@
+{
+  "formatVersion": 1,
+  "id": "my_antenna",
+  "name": "My Antenna",
+  "category": "communication",
+  "mass": 20,
+  "description": "Mast with a rotating dish. The mast tracks the target, the dish spins.",
+  "impactTolerance": 10,
+  "model": "model.obj",
+  "material": {
+    "color": "#c8ccd4",
+    "metallic": 0.2,
+    "smoothness": 0.4
+  },
+  "attachments": [
+    {
+      "id": 0,
+      "position": [
+        0,
+        -0.5,
+        0
+      ],
+      "shape": "single",
+      "name": "bottom",
+      "direction": [
+        0,
+        -1,
+        0
+      ],
+      "flags": "primary",
+      "sockets": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ],
+  "modules": {
+    "Model.AntennaModule": {
+      "frequencies": [
+        2400000000
+      ],
+      "bandwidths": [
+        1000000
+      ],
+      "transmisionPower": [
+        8
+      ],
+      "efficiency": 0.9,
+      "type": "monopole",
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      }
+    },
+    "Model.RotationTrackingModule": {
+      "type": "YX",
+      "rotatorPaths": [
+        "model/mast",
+        "model/dish"
+      ],
+      "limits": {
+        "x": 0,
+        "y": 15,
+        "z": 0
+      },
+      "rotationSpeed": {
+        "x": 20,
+        "y": 10,
+        "z": 0
+      },
+      "consumption": 5,
+      "eceCoeff": 0.8
+    }
+  },
+  "state": {
+    "Model.AntennaModule": {
+      "flags": "isEnabled",
+      "bandwidthLimiter": 0.5
+    },
+    "Model.RotationTrackingModule": {
+      "flags": "isEnabled",
+      "filter": "relay",
+      "target": {}
+    }
+  },
+  "animations": [
+    {
+      "path": "model/dish",
+      "type": "deploy",
+      "axis": [
+        0,
+        1,
+        0
+      ],
+      "stowed": 0,
+      "deployed": 90,
+      "duration": 2
+    },
+    {
+      "path": "model/mast",
+      "type": "spin",
+      "axis": [
+        0,
+        1,
+        0
+      ],
+      "speed": 30
+    }
+  ]
+}

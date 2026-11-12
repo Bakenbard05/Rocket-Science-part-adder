@@ -1,0 +1,48 @@
+{
+  "formatVersion": 1,
+  "id": "mass_imitator",
+  "name": "Mass imitator",
+  "category": "structure",
+  "mass": 1500,
+  "description": "1.5 Tons Mass imitator",
+  "impactTolerance": 10,
+  "model": "model.obj",
+  "material": {
+    "color": "#B9BEC4",
+    "metallic": 0.75,
+    "smoothness": 0.76
+  },
+  "attachments": [
+    {
+      "id": 0,
+      "position": [
+        0,
+        0.5,
+        0
+      ],
+      "shape": "single",
+      "name": "top",
+      "direction": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": 1,
+      "position": [
+        0,
+        -0.5,
+        0
+      ],
+      "shape": "single",
+      "name": "bottom",
+      "direction": [
+        0,
+        -1,
+        0
+      ],
+      "flags": "primary"
+    }
+  ]
+}

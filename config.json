@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": 0,
+  "title": "PartAdder",
+  "type": "extension",
+  "description": "Loads custom parts from the Parts folder without Unity: mesh, material, characteristics and attachment points come from part.json at game start.",
+  "image": "preview.png",
+  "tags": [
+    "Extension",
+    "Parts"
+  ],
+  "data": {
+    "extension": {
+      "author": "Bakenbard05"
+    }
+  }
+}

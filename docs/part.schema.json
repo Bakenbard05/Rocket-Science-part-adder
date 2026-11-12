@@ -1,0 +1,353 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Bakenbard05/Rocket-Science-part-adder/part.schema.json",
+  "title": "PartAdder part.json",
+  "description": "Describes one custom part. Paths are relative to the folder that contains this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["category", "mass", "model", "attachments"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional editor hint so part.json files get autocompletion and validation."
+    },
+    "formatVersion": {
+      "type": "integer",
+      "enum": [1],
+      "default": 1,
+      "description": "Format version. Reserved for future migrations."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "description": "Unique id inside the pack. Defaults to the folder name. Changing it changes the automatic defindex, which breaks saved crafts."
+    },
+    "name": {
+      "type": "string",
+      "description": "Shop name. Defaults to id."
+    },
+    "description": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "command", "fuelTank", "engine", "control", "coupling", "adapter",
+        "structure", "aero", "electricity", "thermal", "communication",
+        "instrument", "utility", "station", "cargo", "hidden"
+      ]
+    },
+    "mass": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Mass in kg."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "impactTolerance": {
+      "type": "number",
+      "minimum": 0,
+      "default": 10,
+      "description": "Impact tolerance in m/s."
+    },
+    "assemblyPosition": {
+      "type": "integer",
+      "default": 0,
+      "description": "Editor sort order inside the category."
+    },
+    "defindex": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Persistent part id. Leave empty to derive one from pack id and part id."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Mesh path relative to the part folder (.obj, .fbx, .glb, .gltf, .dae, .stl, .ply, .3ds, .blend)."
+    },
+    "units": {
+      "type": "string",
+      "enum": ["m", "meter", "meters", "cm", "centimeter", "centimeters", "mm", "millimeter", "millimeters", "in", "inch", "inches", "ft", "foot", "feet"],
+      "default": "m",
+      "description": "Units the mesh is authored in."
+    },
+    "scale": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 1,
+      "description": "Extra multiplier applied on top of units."
+    },
+    "physicsModel": {
+      "type": "string",
+      "description": "Optional separate collision mesh."
+    },
+    "reentryModel": {
+      "type": "string",
+      "description": "Optional mesh used as the reentry shell of the part. Without it a simple shell is generated."
+    },
+    "icon": {
+      "type": "string",
+      "description": "Shop thumbnail (PNG/JPG). Falls back to the category icon."
+    },
+    "material": { "$ref": "#/definitions/material" },
+    "attachments": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Attachment points. At least one is required.",
+      "items": { "$ref": "#/definitions/attachment" }
+    },
+    "cableAttachments": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/cableAttachment" }
+    },
+    "centerOfMassAdjustment": {
+      "$ref": "#/definitions/vector3",
+      "default": [0, 0, 0],
+      "description": "Centre of mass offset in metres."
+    },
+    "radialSnapping": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0,
+      "description": "Radial symmetry step in degrees; 0 disables radial snapping."
+    },
+    "modules": {
+      "type": "object",
+      "description": "Copied to RocketPartSchema.config verbatim. See docs/MODULES.md.",
+      "examples": [
+        { "Model.ElectricityModule": { "maxAmount": 2000000 } }
+      ]
+    },
+    "state": {
+      "type": "object",
+      "description": "Copied to RocketPartSchema.state verbatim.",
+      "examples": [
+        { "Model.ElectricityModule": { "amount": 2000000 } }
+      ]
+    },
+    "thermo": {
+      "type": "object",
+      "description": "Copied to RocketPartSchema.thermoConfig verbatim.",
+      "properties": {
+        "heatCapacity": { "type": "number" },
+        "conductivity": { "type": "number" },
+        "skinConductivity": { "type": "number" },
+        "emissivity": { "type": "number" },
+        "absorption": { "type": "number" },
+        "skinDensity": { "type": "number" },
+        "maxTemperatureInt": { "type": "number" },
+        "maxTemperatureSkin": { "type": "number" }
+      }
+    },
+    "overrides": {
+      "type": "object",
+      "description": "Advanced: raw RocketPartSchema fields merged after baking. defindex, prefabName and iconName are protected."
+    },
+    "animations": {
+      "type": "array",
+      "description": "Procedural motions of the model nodes, played by the mod itself.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "description": "Node of the model, for example model/antenna_y." },
+          "type": { "type": "string", "enum": ["spin", "deploy"] },
+          "axis": { "$ref": "#/definitions/vector3" },
+          "speed": { "type": "number", "description": "Degrees per second (spin)." },
+          "stowed": { "type": "number", "description": "Angle of the stowed pose (deploy)." },
+          "deployed": { "type": "number", "description": "Angle of the deployed pose (deploy)." },
+          "duration": { "type": "number", "description": "Duration of the pose change in seconds (deploy)." },
+          "trigger": { "type": "string", "description": "Part state trigger that starts the deploy." },
+          "foldTrigger": { "type": "string", "description": "Part state trigger that folds the node back. Without it every other transition folds the node back." },
+          "tint": { "$ref": "#/definitions/color", "description": "Colour the part is tinted to when the trigger fires." },
+          "tintAmount": { "type": "number", "minimum": 0, "maximum": 1, "description": "Strength of the tint." }
+        }
+      }
+    },
+    "materials": {
+      "type": "array",
+      "description": "Own material for single nodes of the model.",
+      "items": { "$ref": "#/definitions/nodeMaterial" }
+    },
+    "variants": {
+      "type": "array",
+      "description": "Alternatives of the part, for example the propellant of a tank.",
+      "items": { "$ref": "#/definitions/variant" }
+    }
+  },
+  "definitions": {
+    "vector2": {
+      "oneOf": [
+        { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } },
+        { "type": "object", "required": ["x", "y"], "additionalProperties": false, "properties": { "x": { "type": "number" }, "y": { "type": "number" } } }
+      ]
+    },
+    "vector3": {
+      "oneOf": [
+        { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
+        {
+          "type": "object",
+          "required": ["x", "y", "z"],
+          "additionalProperties": false,
+          "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } }
+        }
+      ]
+    },
+    "color": {
+      "oneOf": [
+        { "type": "string", "description": "\"#RRGGBB\" or \"#RRGGBBAA\"." },
+        { "type": "array", "minItems": 3, "maxItems": 4, "items": { "type": "number", "minimum": 0, "maximum": 1 } },
+        {
+          "type": "object",
+          "required": ["r", "g", "b"],
+          "additionalProperties": false,
+          "properties": {
+            "r": { "type": "number", "minimum": 0, "maximum": 1 },
+            "g": { "type": "number", "minimum": 0, "maximum": 1 },
+            "b": { "type": "number", "minimum": 0, "maximum": 1 },
+            "a": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      ]
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/definitions/color" },
+        "metallic": { "type": "number", "minimum": 0, "maximum": 1 },
+        "smoothness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "albedo": { "type": "string", "description": "Base colour texture." },
+        "normal": { "type": "string", "description": "Normal map." },
+        "mask": { "type": "string", "description": "HDRP mask map." },
+        "tiling": { "$ref": "#/definitions/vector2" },
+        "offset": { "$ref": "#/definitions/vector2" },
+        "shader": { "type": "string", "description": "Fallback shader name, used only when the game template material is unavailable." },
+        "emissive": { "$ref": "#/definitions/color", "description": "Emissive colour, for glowing parts." },
+        "emissiveIntensity": { "type": "number", "minimum": 0, "description": "Strength of the emissive colour." },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Below 1 the part becomes transparent." }
+      }
+    },
+    "nodeMaterial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node"],
+      "description": "Material of a single node of the model.",
+      "properties": {
+        "node": { "type": "string", "description": "Node of the model, for example model/nozzle." },
+        "color": { "$ref": "#/definitions/color" },
+        "metallic": { "type": "number", "minimum": 0, "maximum": 1 },
+        "smoothness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "albedo": { "type": "string", "description": "Base colour texture." },
+        "normal": { "type": "string", "description": "Normal map." },
+        "mask": { "type": "string", "description": "HDRP mask map." },
+        "emissive": { "$ref": "#/definitions/color" },
+        "emissiveIntensity": { "type": "number", "minimum": 0 },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "description": "One alternative of the part, for example the propellant of a tank.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["contentsType", "decouplerModule", "passResources", "decoupleMode", "controlSurface", "electricMotor", "heatShield"]
+        },
+        "id": { "type": "integer", "description": "Id of the variant inside the part." },
+        "name": { "type": "string", "description": "Name shown in the fuel picker." },
+        "iconName": { "type": "string" },
+        "massDelta": { "type": "number", "description": "Mass difference in kg." },
+        "config": { "type": "object", "description": "Module config of the variant." },
+        "state": { "type": "object", "description": "Module state of the variant." },
+        "module": { "type": "string", "description": "Module the variant changes (variants that use overrides)." },
+        "overrides": { "type": "object", "description": "Overrides the variant applies to the module." },
+        "subcategory": { "type": "integer", "description": "Group of the variant in the picker." }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Connection id. Defaults to the array index. Keep it stable across versions."
+        },
+        "name": {
+          "type": "string",
+          "description": "Optional label for your own reference."
+        },
+        "position": {
+          "$ref": "#/definitions/vector3",
+          "default": [0, 0, 0],
+          "description": "Centre of the connection box relative to the prefab origin."
+        },
+        "direction": {
+          "oneOf": [
+            { "type": "string", "enum": ["up", "top", "down", "bottom", "left", "right", "forward", "front", "back", "backward"] },
+            { "$ref": "#/definitions/vector3" }
+          ],
+          "default": "up",
+          "description": "Connection normal."
+        },
+        "rotation": {
+          "$ref": "#/definitions/vector3",
+          "description": "Euler angles in degrees. Replaces direction when present."
+        },
+        "shape": {
+          "type": "string",
+          "enum": [
+            "single", "dual", "triple", "triangle", "rectangle", "butterfly",
+            "hexagon", "hexdual", "line", "wide", "broad", "wide_quad",
+            "broad_quad", "heptahedron", "star", "docking_small", "docking_medium",
+            "heptahedron_range_1", "hexagon_range_1"
+          ],
+          "default": "single"
+        },
+        "spacing": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1,
+          "description": "Scales the preset socket spacing and connection box."
+        },
+        "size": {
+          "$ref": "#/definitions/vector3",
+          "description": "Explicit connection box size."
+        },
+        "center": {
+          "$ref": "#/definitions/vector3",
+          "default": [0, 0.1, 0],
+          "description": "Centre of the connection box relative to position."
+        },
+        "sockets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/vector3" },
+          "description": "Explicit socket offsets in the attachment's local plane."
+        },
+        "flags": {
+          "type": "string",
+          "pattern": "^(none|dynamic|primary|axial)(\\s*[,|+]\\s*(none|dynamic|primary|axial))*$",
+          "default": "none",
+          "description": "Connection flags, combinable with commas: e.g. \"dynamic, primary\"."
+        }
+      }
+    },
+    "cableAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "integer", "minimum": 0, "description": "Defaults to the array index." },
+        "name": { "type": "string" },
+        "position": { "$ref": "#/definitions/vector3", "default": [0, 0, 0] }
+      }
+    }
+  }
+}
