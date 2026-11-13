@@ -249,7 +249,7 @@
     <section class="group">
       <h2 data-i18n="section.engineEffects"></h2>
       <div id="engine-effects"></div>
-      <label class="check"><input id="chk-flame" type="checkbox"> <span data-i18n="view.flamePreview"></span></label>
+      <label class="check"><input id="chk-flame" type="checkbox" checked> <span data-i18n="view.flamePreview"></span></label>
       <div class="field">
         <label for="f-throttle" data-i18n="field.throttle"></label>
         <input id="f-throttle" type="range" min="0" max="100" step="1" value="100">
@@ -265,6 +265,42 @@
       </div>
       <p class="hint" data-i18n="hint.engineEffects"></p>
       <p class="hint" data-i18n="hint.flamePreview"></p>
+      <p class="hint" data-i18n="hint.forcePoint"></p>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="section.flame"></h2>
+      <div class="field">
+        <label for="flame-name" data-i18n="field.flameName"></label>
+        <div class="input-row">
+          <input id="flame-name" type="text" spellcheck="false" placeholder="my_flame">
+          <button id="btn-flame-save" class="btn small" data-i18n="btn.flameSave"></button>
+          <label class="btn small" for="file-flame-config" data-i18n="btn.flameLoad"></label>
+          <input id="file-flame-config" type="file" accept=".json" hidden>
+        </div>
+      </div>
+      <div class="input-row">
+        <button id="btn-flame-update" class="btn small" data-i18n="btn.flameUpdate"></button>
+        <button id="btn-flame-delete" class="btn small" data-i18n="btn.flameDelete"></button>
+      </div>
+      <div id="flame-list" class="compact-list"></div>
+      <div class="input-row">
+        <button id="btn-flame-force-point" class="btn small" data-i18n="btn.flameForcePoint"></button>
+      </div>
+      <div class="field">
+        <label for="f-flame-base" data-i18n="field.flameBase"></label>
+        <select id="f-flame-base"></select>
+      </div>
+      <div id="flame-params" class="compact-list"></div>
+      <div class="field">
+        <label data-i18n="field.flameProfile"></label>
+        <canvas id="flame-curve" class="flame-curve"></canvas>
+        <div class="input-row">
+          <button id="btn-flame-curve-clear" class="btn small" data-i18n="btn.flameCurveClear"></button>
+        </div>
+      </div>
+      <p class="hint" data-i18n="hint.flame"></p>
+      <p class="hint" data-i18n="hint.flameLibrary"></p>
     </section>
 
     <section class="group">
@@ -383,15 +419,18 @@
   <div class="splitter" id="splitter-left" role="separator" aria-orientation="vertical"></div>
 
   <section class="viewport-wrap">
-    <canvas id="viewport"></canvas>
-    <div class="viewport-hint" id="drop-hint" data-i18n="hint.drop"></div>
-    <div class="viewport-overlay">
-      <button id="btn-fit" class="btn small" data-i18n="btn.fit"></button>
-      <label class="check"><input id="chk-labels" type="checkbox" checked> <span data-i18n="view.labels"></span></label>
-      <label class="check"><input id="chk-grid" type="checkbox" checked> <span data-i18n="view.grid"></span></label>
-      <label class="check"><input id="chk-snap" type="checkbox"> <span data-i18n="view.snap"></span></label>
+    <div class="viewport-stage">
+      <canvas id="viewport"></canvas>
+      <div class="viewport-hint" id="drop-hint" data-i18n="hint.drop"></div>
+      <div class="viewport-overlay">
+        <button id="btn-fit" class="btn small" data-i18n="btn.fit"></button>
+        <label class="check"><input id="chk-labels" type="checkbox" checked> <span data-i18n="view.labels"></span></label>
+        <label class="check"><input id="chk-grid" type="checkbox" checked> <span data-i18n="view.grid"></span></label>
+        <label class="check"><input id="chk-snap" type="checkbox"> <span data-i18n="view.snap"></span></label>
+      </div>
+      <div class="viewport-axes" data-i18n="hint.axes"></div>
     </div>
-    <div class="viewport-axes" data-i18n="hint.axes"></div>
+    <div class="anim-timeline" id="anim-timeline"></div>
   </section>
 
   <div class="splitter" id="splitter-right" role="separator" aria-orientation="vertical"></div>

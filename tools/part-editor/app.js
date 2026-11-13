@@ -15,6 +15,12 @@ import {
 } from './presets.js';
 import { EXAMPLES } from './examples.js';
 import { COMPONENTS, COMPONENT_BY_KEY, COMPONENT_GROUPS, ENGINE_SOUNDS, ENGINE_FLAMES } from './components.js';
+import {
+  FLAME_PARAMS, defaultFlame, flameToJson, flameFromJson, applyFlamePreset,
+  createFlameGeometry, createFlameMaterial, applyFlameParams,
+} from './flame.js';
+import { createTimeline } from './anim-timeline.js';
+import { createCurveEditor, defaultFlameProfile } from './flame-curve.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -70,7 +76,11 @@ const state = {
   animation: null,        // index of the open animation
   nodeMaterial: null,     // index of the open node material
   variant: null,          // index of the open variant
-  animPreview: { playing: false, time: 0, only: null },
+  animPreview: { playing: false, time: 0, only: null, key: null },
+  flame: defaultFlame(ENGINE_FLAMES[0]),   // the flame of the engine (flame.json)
+  flames: [],              // the custom flames of the part: { name, base, params, profile }
+  soundFile: null,         // the sound of the engine (sound.wav)
+  soundData: '',           // the same file as base64, for the export and the library
   explodeRest: null,        // rest positions of the mesh objects for the exploded view
   hiddenObjects: 0,         // line and point objects the game cannot render
   strippedLines: 0,         // line elements removed from an OBJ before parsing
@@ -129,6 +139,9 @@ const modelRoot = new THREE.Group();
 scene.add(modelRoot);
 const overlayRoot = new THREE.Group();
 scene.add(overlayRoot);
+
+// A hook for the tests: they look at the scene and at the state of the editor.
+window.partEditor = { scene, state, overlayRoot };
 
 const transform = new TransformControls(camera, renderer.domElement);
 transform.setSize(0.8);
@@ -1870,6 +1883,17 @@ function renderEngineEffects() {
   const modules = state.part.modules || (state.part.modules = {});
   const module = modules[ENGINE_EFFECTS_KEY];
 
+  if (module) {
+    // The game creates the modules of a part by walking its state: a module of
+    // the config without an entry in the state is never created, so the flame
+    // and the sound of the engine would be missing.
+    const states = state.part.state || (state.part.state = {});
+    if (!states[ENGINE_EFFECTS_KEY]) {
+      states[ENGINE_EFFECTS_KEY] = {};
+      commitComponents();
+    }
+  }
+
   if (!module) {
     const button = document.createElement('button');
     button.className = 'btn small';
@@ -1879,6 +1903,10 @@ function renderEngineEffects() {
         sound: 'rocket_engine_heavy',
         flames: ['engine_0_flame'],
       };
+      // The game creates the modules of a part by walking its state: a module
+      // of the config without an entry in the state is never created.
+      const states = state.part.state || (state.part.state = {});
+      if (!states[ENGINE_EFFECTS_KEY]) states[ENGINE_EFFECTS_KEY] = {};
       commitComponents();
       renderEngineEffects();
     });
@@ -1957,7 +1985,23 @@ function renderEngineEffects() {
       node.textContent = option;
       dropdown.append(node);
     }
-    if (flame && !ENGINE_FLAMES.includes(flame)) {
+
+    // The custom flames of the part: they are the flames of the editor, the
+    // loader builds them from the files of the pack.
+    const custom = customFlameNames();
+    if (custom.length) {
+      const group = document.createElement('optgroup');
+      group.label = t('engineEffects.customFlames');
+      for (const option of custom) {
+        const node = document.createElement('option');
+        node.value = option;
+        node.textContent = option;
+        group.append(node);
+      }
+      dropdown.append(group);
+    }
+
+    if (flame && !ENGINE_FLAMES.includes(flame) && !custom.includes(flame)) {
       const custom = document.createElement('option');
       custom.value = flame;
       custom.textContent = flame;
@@ -2112,14 +2156,77 @@ function runCheck() {
     add('ok', checkAnimations(part.animations.length));
   }
 
+  // The game creates the modules of a part by walking its state: a module of
+  // the config without an entry in the state is never created.
+  const states = part.state || {};
+  const withoutState = Object.keys(part.modules || {}).filter((key) => states[key] === undefined);
+  if (withoutState.length) {
+    add('error', t('check.moduleState', { names: withoutState.join(', ') }));
+  }
+
   // The engine effects
   const effects = part.modules?.[ENGINE_EFFECTS_KEY];
   if (effects) {
-    const badFlames = (effects.flames || []).filter((flame) => !ENGINE_FLAMES.includes(flame));
-    if (badFlames.length) {
-      add('warn', t('check.unknownFlames', { names: badFlames.join(', ') }));
+    const list = effects.flames || [];
+    const saved = (name) => state.flames.some((flame) => flame.name === name);
+    const custom = list.filter((flame) => !ENGINE_FLAMES.includes(flame));
+    const unknown = custom.filter((flame) => !saved(flame));
+    if (unknown.length) {
+      add('warn', t('check.unknownFlames', { names: unknown.join(', ') }));
     } else {
       add('ok', t('check.effectsOk'));
+    }
+
+    // The flame of the part (flame.json) is used only when the list of the
+    // engine does not name a custom flame.
+    if (custom.length) {
+      add('warn', t('check.partFlameUnused', { names: custom.join(', ') }));
+      if (!custom.includes(state.flame?.name || '')) {
+        add('warn', t('check.flameNotInList'));
+      }
+    }
+
+    // The start and the stop sounds of the engine are optional: no stock engine
+    // has them. The game plays the stop sound in full at shutdown and postpones
+    // the fade of the loop by 0.9 of the start sound, so a loop set for both
+    // leaves the engine roaring after the thrust is zero (the loader drops such
+    // a pair, and it drops a sound that is the loop itself).
+    const start = effects.startSound || '';
+    const end = effects.endSound || '';
+    const loop = effects.sound || '';
+    if (start && end && start === end) {
+      add('warn', t('check.startStopSame', { name: start }));
+    } else if (start && start === loop) {
+      add('warn', t('check.startStopLoop', { name: start }));
+    } else if (end && end === loop) {
+      add('warn', t('check.startStopLoop', { name: end }));
+    }
+  }
+
+  // The length of the flame is in metres, so it has to be compared with the
+  // part itself: a flame several times higher than its engine is the usual
+  // mistake (the desc of the game counts in metres too). The check runs even
+  // when the effects module is not there yet, because that is exactly when the
+  // author picks the size of the flame.
+  const flameSize = Number(state.flame?.params?.size);
+  if (state.modelObject && flameSize > 0) {
+    const box = new THREE.Box3().setFromObject(state.modelObject);
+    const extent = box.getSize(new THREE.Vector3());
+    const height = extent.y > 0.01 ? extent.y : Math.max(extent.x, extent.z);
+    if (height > 0.01) {
+      const ratio = flameSize / height;
+      if (ratio > 2.5) {
+        add('warn', t('check.flameLong', {
+          size: flameSize.toFixed(2),
+          height: height.toFixed(2),
+          ratio: ratio.toFixed(1),
+        }));
+      } else {
+        add('ok', t('check.flameSize', {
+          size: flameSize.toFixed(2),
+          height: height.toFixed(2),
+        }));
+      }
     }
   }
 
@@ -2927,7 +3034,7 @@ function zipStore(files) {
   return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
 }
 
-function exportObj(root, bakeScale = true) {
+function exportObj(root, bakeScale = true, reference = modelRoot) {
   const units = UNITS[state.part.units] ?? 1;
   const scale = Number(state.part.scale) > 0 ? Number(state.part.scale) : 1;
   const factor = bakeScale ? units * scale : 1;
@@ -2937,7 +3044,7 @@ function exportObj(root, bakeScale = true) {
   let uvOffset = 1;
 
   root.updateWorldMatrix(true, true);
-  const inverse = new THREE.Matrix4().copy(modelRoot.matrixWorld).invert();
+  const inverse = new THREE.Matrix4().copy(reference.matrixWorld).invert();
 
   root.traverse((node) => {
     if (!node.isMesh || !node.geometry) return;
@@ -3114,8 +3221,21 @@ function renderExportParts() {
   }
 }
 
+// The flames the engine of the part takes: the names in the module.
+function engineFlameNames(part) {
+  const list = part?.modules?.[ENGINE_EFFECTS_KEY]?.flames;
+  if (!Array.isArray(list)) return [];
+  return list.filter((name) => typeof name === 'string' && name);
+}
+
 // Collects the files of one part: part.json, the mesh and the textures.
-function collectPartFiles(packName, folder, part, mesh, textures) {
+//
+// The flames are written the way the loader reads them: the engine takes the
+// flames of the list of the module. A custom flame of the list becomes the
+// file "flames/<name>.json", and the file "flame.json" (the flame of the part
+// itself) is written only when the engine takes no custom flame. So the pack
+// never carries two flames where one is enough.
+function collectPartFiles(packName, folder, part, mesh, textures, flame, flames) {
   const files = [];
   const json = { ...part };
   json.model = 'model.obj';
@@ -3123,6 +3243,42 @@ function collectPartFiles(packName, folder, part, mesh, textures) {
 
   files.push({ name: `${packName}/${folder}/part.json`, data: encodeUtf8(JSON.stringify(json, null, 2)) });
   if (mesh) files.push({ name: `${packName}/${folder}/model.obj`, data: encodeUtf8(mesh) });
+
+  // The flames the engine takes.
+  const wanted = new Set(engineFlameNames(part));
+
+  // The custom flames of the part: they are the flames of the editor, the
+  // loader builds them from these files.
+  let written = 0;
+  for (const custom of flames || []) {
+    if (!wanted.has(custom.name)) continue;
+    // The flame that is open in the editor wins over its saved copy, so the
+    // changes of the author are not lost.
+    const source = state.flame?.name === custom.name ? state.flame : custom;
+    const config = flameToJson({
+      base: source.base,
+      params: source.params,
+      profile: source.profile,
+    });
+    files.push({
+      name: `${packName}/${folder}/flames/${custom.name}.json`,
+      data: encodeUtf8(JSON.stringify(config, null, 2)),
+    });
+    written++;
+  }
+
+  // The sound of the engine: the loader reads it from the part folder.
+  if (flame?.sound) {
+    files.push({ name: `${packName}/${folder}/sound.wav`, data: dataUrlToBytes('data:,' + flame.sound) });
+  }
+
+  // The flame of the part itself: only when the engine takes no custom flame.
+  if (flame?.json && written === 0) {
+    const text = typeof flame.json === 'string'
+      ? flame.json
+      : JSON.stringify(flame.json, null, 2);
+    files.push({ name: `${packName}/${folder}/flame.json`, data: encodeUtf8(text) });
+  }
 
   for (const [name, source] of textures) {
     files.push({ name: `${packName}/${folder}/${name}`, data: dataUrlToBytes(source) });
@@ -3186,7 +3342,10 @@ $('btn-export-pack').addEventListener('click', async () => {
     const part = toJson(state.part);
     part.units = 'm';
     const textures = partTextures(state.part, state.textureSources, state.nodeTextureSources);
-    files.push(...collectPartFiles(packName, partName, part, state.modelObject ? exportObj(state.modelObject) : '', textures));
+    files.push(...collectPartFiles(packName, partName, part, state.modelObject ? exportObj(state.modelObject) : '', textures, {
+      json: flameToJson(state.flame),
+      sound: state.soundData,
+    }, state.flames));
     preview = renderPreview(256);
     count++;
   }
@@ -3203,7 +3362,10 @@ $('btn-export-pack').addEventListener('click', async () => {
     }
     const folder = slugify(entry.name || entry.id || 'part');
     const textures = partTextures(part, entry.textures, entry.nodeTextures);
-    files.push(...collectPartFiles(packName, folder, toJson(part), entry.mesh || '', textures));
+    files.push(...collectPartFiles(packName, folder, toJson(part), entry.mesh || '', textures, entry.flame ? {
+      json: entry.flame,
+      sound: entry.sound || '',
+    } : null, entry.flames || []));
     count++;
   }
 
@@ -3437,6 +3599,9 @@ $('f-explode').addEventListener('input', (event) => {
 // ---------------------------------------------------------------------------
 
 let flamePreview = null;
+let flameMaterial = null;
+let flameGeometry = null;
+let flameClock = null;
 let soundPlayer = null;
 let soundUrl = null;
 
@@ -3450,15 +3615,31 @@ function engineForcePoint() {
   return new THREE.Vector3(Number(point.x) || 0, Number(point.y) || 0, Number(point.z) || 0);
 }
 
-function updateFlamePreview() {
+// The flame of the engine. The game takes a prefab of the engine, copies its
+// material and drives the shader every frame (the throttle, the pressure and
+// the fade of the length). The preview draws the same thing with a shader of
+// our own: the numbers are the ones of the game, so what the author sees here
+// is what the flame does in the game.
+function clearFlamePreview() {
   if (flamePreview) {
     overlayRoot.remove(flamePreview);
-    flamePreview.traverse((node) => {
-      if (node.geometry) node.geometry.dispose();
-      if (node.material) node.material.dispose();
-    });
     flamePreview = null;
   }
+  // Only the tube of the preview belongs to us: the geometry of the flame is
+  // built from its profile.
+  if (flameGeometry) {
+    flameGeometry.dispose();
+    flameGeometry = null;
+  }
+  if (flameMaterial) {
+    flameMaterial.dispose();
+    flameMaterial = null;
+  }
+}
+
+function updateFlamePreview() {
+  clearFlamePreview();
+  updateForcePointMarker();
 
   if (!$('chk-flame')?.checked) return;
 
@@ -3467,45 +3648,117 @@ function updateFlamePreview() {
 
   const engine = state.part.modules?.['Model.EngineModule'];
   const thrust = Number(engine?.maxThrustAsl) || 0;
-  const throttle = Math.min(1, Math.max(0, (Number($('f-throttle')?.value) || 0) / 100));
+  const throttle = throttleValue();
 
-  // The size of the flame follows the thrust of the engine, the throttle makes
-  // it grow.
-  const base = 0.2 + Math.min(1.2, Math.sqrt(thrust / 1000000) * 1.0);
-  const length = base * (0.2 + 0.8 * throttle);
-  const radius = 0.05 + length * 0.12;
+    // The length of the flame in metres: the loader builds the geometry of the
+  // flame in that size, so the preview and the game show the same flame. The
+  // throttle makes it shorter while the engine runs down.
+  const size = Number(state.flame.params.size) > 0 ? Number(state.flame.params.size) : 2.5;
+  const length = size * (0.35 + 0.65 * throttle);
+
+  // The radius of the flame: the profile says how wide it is along its
+  // length, the widest point is the radius of the whole flame.
+  const profile = state.flame.profile || [];
+  let radius = 0;
+  for (const point of profile) {
+    radius = Math.max(radius, Number(point.r) || 0);
+  }
+
+  const material = createFlameMaterial();
+  applyFlameParams(material, state.flame);
+  material.uniforms.uThrottle.value = throttle;
+  // The geometry is already built in the right length, the shader only scales
+  // it with the throttle.
+  material.uniforms.uLength.value = 1;
+  material.uniforms.uRadius.value = radius;
+  flameMaterial = material;
 
   const group = new THREE.Group();
 
-  const outer = new THREE.Mesh(
-    new THREE.ConeGeometry(radius, length, 14, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xff8a2a,
-      transparent: true,
-      opacity: 0.5,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  outer.position.y = -length / 2;
+  flameGeometry = createFlameGeometry(profile, length);
+  const mesh = new THREE.Mesh(flameGeometry, material);
+  group.add(mesh);
 
-  const inner = new THREE.Mesh(
-    new THREE.ConeGeometry(radius * 0.45, length * 0.6, 12, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xfff2cc,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  inner.position.y = -length * 0.3;
-
-  group.add(outer, inner);
   group.position.copy(point);
   group.renderOrder = 3;
   flamePreview = group;
   overlayRoot.add(group);
+}
+
+function tickFlamePreview() {
+  if (!flameMaterial) return;
+  if (!flameClock) flameClock = new THREE.Clock();
+  flameMaterial.uniforms.uTime.value = flameClock.getElapsedTime();
+}
+
+// The marker of the force point: the place where the flame of the game starts.
+// The engine module carries it, so the author can see where the flame will
+// grow and move the point in the fields of the engine.
+let forcePointMarker = null;
+
+function updateForcePointMarker() {
+  if (forcePointMarker) {
+    overlayRoot.remove(forcePointMarker);
+    forcePointMarker.traverse((node) => {
+      if (node.geometry) node.geometry.dispose();
+      if (node.material) node.material.dispose();
+    });
+    forcePointMarker = null;
+  }
+
+  const point = engineForcePoint();
+  if (!point) return;
+
+  const group = new THREE.Group();
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 14, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0xffb347,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.9,
+    }),
+  );
+  sphere.renderOrder = 6;
+  group.add(sphere);
+
+  // The axes stick out of the flame, so the point stays visible.
+  const axes = new THREE.AxesHelper(0.32);
+  axes.renderOrder = 6;
+  group.add(axes);
+
+  group.position.copy(point);
+  forcePointMarker = group;
+  overlayRoot.add(group);
+}
+
+// The curve editor of the flame: the radius of the flame along its length.
+// The game builds the flame out of that profile, so it is the shape of the
+// flame.
+let flameCurve = null;
+
+function initFlameCurve() {
+  const canvas = $('flame-curve');
+  if (!canvas) return;
+
+  flameCurve = createCurveEditor(canvas, {
+    getPoints: () => state.flame.profile || [],
+    getLength: () => Number(state.flame.params?.size) || 0,
+    onChange: (points) => {
+      state.flame.profile = points;
+      updateFlamePreview();
+      renderStatus();
+    },
+  });
+
+  $('btn-flame-curve-clear')?.addEventListener('click', () => {
+    state.flame.profile = defaultFlameProfile();
+    updateFlamePreview();
+    renderStatus();
+    if (flameCurve) flameCurve.draw();
+  });
+
+  flameCurve.draw();
 }
 
 function throttleValue() {
@@ -3546,7 +3799,11 @@ function stopSound() {
   if (button) button.textContent = '▶';
 }
 
-$('chk-flame').addEventListener('change', updateFlamePreview);
+$('chk-flame').addEventListener('change', () => {
+  updateFlamePreview();
+  // The flame hangs below the engine, so the view has to make room for it.
+  fitView();
+});
 $('f-throttle').addEventListener('input', () => {
   updateFlamePreview();
   updateSoundVolume();
@@ -3554,6 +3811,19 @@ $('f-throttle').addEventListener('input', () => {
 $('file-sound').addEventListener('change', (event) => {
   const file = event.target.files?.[0];
   $('f-sound-file').value = file ? file.name : '';
+  // The sound of the engine travels with the part: the loader reads it from
+  // the part folder and puts it into the audio cache of the game.
+  state.soundFile = file || null;
+  state.soundData = '';
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      state.soundData = comma >= 0 ? result.slice(comma + 1) : '';
+    };
+    reader.readAsDataURL(file);
+  }
 });
 $('btn-sound-play').addEventListener('click', () => {
   if (soundPlayer && !soundPlayer.paused) {
@@ -3561,6 +3831,310 @@ $('btn-sound-play').addEventListener('click', () => {
     return;
   }
   toggleSound();
+});
+
+// ---------------------------------------------------------------------------
+// The flame of the engine: the parameters of the material and the own mesh
+// ---------------------------------------------------------------------------
+
+// One row per parameter of the material of the game. The numbers are written
+// to flame.json and the loader copies them onto the material of the flame, so
+// the flame in the game behaves like the preview here.
+function renderFlameEditor() {
+  const list = $('flame-params');
+  const base = $('f-flame-base');
+  if (!list || !base) return;
+
+  list.textContent = '';
+
+  // The flame is drawn at the force point of the engine, so a part without an
+  // engine has nothing to show.
+  if (!engineForcePoint()) {
+    const warn = document.createElement('p');
+    warn.className = 'hint';
+    warn.textContent = t('flame.noEngine');
+    list.append(warn);
+  }
+
+  if (!base.options.length) {
+    for (const name of ENGINE_FLAMES) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      base.append(option);
+    }
+  }
+  base.value = state.flame.base;
+
+  renderFlameList();
+  if (flameCurve) flameCurve.draw();
+
+  const write = (key, value) => {
+    state.flame.params[key] = value;
+    applyFlameParams(flameMaterial, state.flame);
+    updateFlamePreview();
+    renderStatus();
+  };
+
+  for (const param of FLAME_PARAMS) {
+    const row = document.createElement('div');
+    row.className = 'component-row';
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = t('flame.' + param.key);
+    row.append(label);
+
+    const value = state.flame.params[param.key];
+
+    if (param.type === 'color') {
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = value?.hex || '#ffffff';
+      input.addEventListener('input', () => write(param.key, { hex: input.value, hdr: null }));
+      row.append(input);
+    } else if (param.type === 'number') {
+      const row2 = document.createElement('div');
+      row2.className = 'input-row';
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.min = param.min;
+      range.max = param.max;
+      range.step = param.step;
+      range.value = value;
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.min = param.min;
+      number.max = param.max;
+      number.step = param.step;
+      number.value = value;
+      range.addEventListener('input', () => {
+        number.value = range.value;
+        write(param.key, Number(range.value));
+      });
+      number.addEventListener('input', () => {
+        range.value = number.value;
+        write(param.key, Number(number.value));
+      });
+      row2.append(range, number);
+      row.append(row2);
+    } else {
+      const row2 = document.createElement('div');
+      row2.className = 'input-row';
+      for (let i = 0; i < param.def.length; i++) {
+        const number = document.createElement('input');
+        number.type = 'number';
+        number.step = '0.01';
+        number.value = value[i];
+        number.addEventListener('input', () => {
+          const next = state.flame.params[param.key].slice();
+          next[i] = Number(number.value) || 0;
+          write(param.key, next);
+        });
+        row2.append(number);
+      }
+      row.append(row2);
+    }
+
+    list.append(row);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The custom flames of the part: they are saved under a name and can be put
+// into the list of the flames of the engine
+// ---------------------------------------------------------------------------
+
+function customFlameNames() {
+  return state.flames.map((flame) => flame.name);
+}
+
+function currentFlame(name) {
+  return {
+    name,
+    base: state.flame.base,
+    params: JSON.parse(JSON.stringify(state.flame.params || {})),
+    profile: (state.flame.profile || []).map((point) => ({ v: point.v, r: point.r })),
+  };
+}
+
+function renderFlameList() {
+  const list = $('flame-list');
+  if (!list) return;
+  list.textContent = '';
+
+  if (!state.flames.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = t('flame.libraryEmpty');
+    list.append(empty);
+    return;
+  }
+
+  state.flames.forEach((flame, index) => {
+    const row = document.createElement('div');
+    row.className = 'component-row';
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = flame.name;
+    row.append(label);
+
+    const load = document.createElement('button');
+    load.className = 'icon-btn';
+    load.textContent = '✎';
+    load.title = t('flame.loadFlame');
+    load.addEventListener('click', () => loadCustomFlame(index));
+    row.append(load);
+
+    const use = document.createElement('button');
+    use.className = 'icon-btn';
+    use.textContent = '→';
+    use.title = t('flame.useFlame');
+    use.addEventListener('click', () => useCustomFlame(flame.name));
+    row.append(use);
+
+    const remove = document.createElement('button');
+    remove.className = 'icon-btn';
+    remove.textContent = '✕';
+    remove.title = t('comp.remove');
+    remove.addEventListener('click', () => {
+      state.flames.splice(index, 1);
+      renderFlameList();
+      renderEngineEffects();
+      renderStatus();
+    });
+    row.append(remove);
+
+    list.append(row);
+  });
+}
+
+function saveCustomFlame() {
+  const name = ($('flame-name')?.value || '').trim().replace(/\s+/g, '_');
+  if (!name) {
+    statusLine(t('flame.nameRequired'), 'warn');
+    return;
+  }
+  if (customFlameNames().includes(name)) {
+    statusLine(t('flame.nameTaken', { name }), 'warn');
+    return;
+  }
+
+  state.flames.push(currentFlame(name));
+  renderFlameList();
+  statusLine(t('flame.saved', { name }), 'ok');
+}
+
+function updateCustomFlame() {
+  const name = ($('flame-name')?.value || '').trim();
+  const index = state.flames.findIndex((flame) => flame.name === name);
+  if (index < 0) {
+    statusLine(t('flame.notSaved'), 'warn');
+    return;
+  }
+  state.flames[index] = currentFlame(name);
+  renderFlameList();
+  statusLine(t('flame.updated', { name }), 'ok');
+}
+
+function deleteCustomFlame() {
+  const name = ($('flame-name')?.value || '').trim();
+  const index = state.flames.findIndex((flame) => flame.name === name);
+  if (index < 0) {
+    statusLine(t('flame.notSaved'), 'warn');
+    return;
+  }
+  state.flames.splice(index, 1);
+  renderFlameList();
+  renderEngineEffects();
+  statusLine(t('flame.deleted', { name }), 'ok');
+}
+
+// Puts the flame into the list of the flames of the engine.
+function useCustomFlame(name) {
+  const modules = state.part.modules || (state.part.modules = {});
+  const module = modules[ENGINE_EFFECTS_KEY] || (modules[ENGINE_EFFECTS_KEY] = {});
+  const flames = Array.isArray(module.flames) ? module.flames : [];
+  if (!flames.includes(name)) flames.push(name);
+  module.flames = flames;
+  commitComponents();
+  renderEngineEffects();
+  statusLine(t('flame.addedToEngine', { name }), 'ok');
+}
+
+// Loads a saved flame into the editor.
+async function loadCustomFlame(index) {
+  const flame = state.flames[index];
+  if (!flame) return;
+
+  state.flame = defaultFlame(flame.base);
+  state.flame.params = JSON.parse(JSON.stringify(flame.params || {}));
+  state.flame.name = flame.name || '';
+  if (Array.isArray(flame.profile) && flame.profile.length) {
+    state.flame.profile = flame.profile.map((point) => ({ v: point.v, r: point.r }));
+  }
+  $('flame-name').value = flame.name;
+
+  renderFlameEditor();
+  updateFlamePreview();
+  statusLine(t('flame.loaded', { name: flame.name }), 'ok');
+}
+
+$('btn-flame-save')?.addEventListener('click', saveCustomFlame);
+$('btn-flame-update')?.addEventListener('click', updateCustomFlame);
+$('btn-flame-delete')?.addEventListener('click', deleteCustomFlame);
+
+// Puts the force point of the engine to the lowest point of the mesh: the
+// flame of the game starts exactly there.
+$('btn-flame-force-point')?.addEventListener('click', () => {
+  if (!state.modelObject) {
+    statusLine(t('flame.noMesh'), 'warn');
+    return;
+  }
+
+  const modules = state.part.modules || (state.part.modules = {});
+  const engine = modules['Model.EngineModule'];
+  if (!engine) {
+    statusLine(t('flame.noEngine'), 'warn');
+    return;
+  }
+
+  const box = new THREE.Box3().setFromObject(state.modelObject);
+  const min = modelRoot.worldToLocal(box.min.clone());
+  const round = (value) => Math.round(value * 1000) / 1000;
+  engine.forcePoint = { x: round(min.x), y: round(min.y), z: round(min.z) };
+  commitComponents();
+  renderEngineEffects();
+  updateFlamePreview();
+  statusLine(t('flame.forcePointMoved', { x: engine.forcePoint.x, y: engine.forcePoint.y, z: engine.forcePoint.z }), 'ok');
+});
+
+// Loads a flame file (flame.json of a part or a saved flame of the editor) into
+// the editor, so it can be compared with the flame in the game.
+$('file-flame-config')?.addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    state.flame = flameFromJson(data);
+    $('flame-name').value = state.flame.base || '';
+    renderFlameEditor();
+    updateFlamePreview();
+    statusLine(t('flame.loaded', { name: file.name }), 'ok');
+  } catch (error) {
+    statusLine(t('flame.loadFailed', { error: error.message || error }), 'bad');
+  }
+});
+
+$('f-flame-base')?.addEventListener('change', (event) => {
+  state.flame.base = event.target.value;
+  // The stock flames have their own values: they are the presets of the editor.
+  if (applyFlamePreset(state.flame, state.flame.base)) {
+    renderFlameEditor();
+  }
+  updateFlamePreview();
+  renderStatus();
 });
 
 // ---------------------------------------------------------------------------
@@ -3727,6 +4301,21 @@ function renderLibrary() {
           const file = new File([entry.mesh], entry.modelName || 'model.obj', { type: 'text/plain' });
           await loadModelFile(file);
         }
+        if (entry.flame) {
+          state.flame = flameFromJson(entry.flame);
+          renderFlameEditor();
+        }
+        if (entry.flames) {
+          state.flames = entry.flames.map((flame) => ({ ...flame }));
+          renderFlameList();
+          renderEngineEffects();
+        }
+        if (entry.sound) {
+          const file = new File([dataUrlToBytes('data:,' + entry.sound)], 'sound.wav', { type: 'audio/wav' });
+          state.soundFile = file;
+          state.soundData = entry.sound;
+          $('f-sound-file').value = 'sound.wav';
+        }
         await restoreLibraryTextures(entry);
       } catch (error) {
         statusLine(t('library.loadFailed', { error: error.message || error }), 'bad');
@@ -3791,6 +4380,12 @@ async function saveToLibrary() {
     // The textures travel as well, otherwise the loaded part would lose them.
     textures: { ...state.textureSources },
     nodeTextures: structuredClone(state.nodeTextureSources),
+    // The flame of the engine travels with the part: the parameters and the
+    // profile of the flame.
+    flame: flameToJson(state.flame),
+    // The custom flames of the part travel with it.
+    flames: JSON.parse(JSON.stringify(state.flames || [])),
+    sound: state.soundData,
     savedAt: new Date().toISOString(),
   };
 
@@ -4645,10 +5240,12 @@ $('btn-add-component').addEventListener('click', () => {
 // Animations: procedural motions of the model nodes
 // ---------------------------------------------------------------------------
 
-const ANIMATION_TYPES = ['spin', 'deploy'];
+const ANIMATION_TYPES = ['spin', 'deploy', 'keys'];
 
 function animationTypeLabel(type) {
-  return type === 'deploy' ? t('anim.deploy') : t('anim.spin');
+  if (type === 'deploy') return t('anim.deploy');
+  if (type === 'keys') return t('anim.keys');
+  return t('anim.spin');
 }
 
 function buildModelNodeMap() {
@@ -4723,7 +5320,41 @@ function animationDefaults() {
     foldTrigger: '',
     tint: '',
     tintAmount: 1,
+    keys: [],
   };
+}
+
+// A motion with keys starts with two of them: the node at the start and at the
+// end of the timeline.
+function defaultAnimationKeys(duration = 2) {
+  return [
+    { time: 0, angle: 0, smooth: true },
+    { time: Math.max(0.5, duration), angle: 90, smooth: true },
+  ];
+}
+
+// The angle of a motion with keys at the given time, the same way the runtime
+// driver reads them (PartAnimationDriver.SampleKeys).
+function sampleAnimationKeys(animation, time) {
+  const keys = Array.isArray(animation.keys) ? animation.keys : [];
+  if (!keys.length) return 0;
+  if (keys.length === 1) return Number(keys[0].angle) || 0;
+  if (time <= (Number(keys[0].time) || 0)) return Number(keys[0].angle) || 0;
+
+  for (let i = 0; i < keys.length - 1; i++) {
+    const from = keys[i];
+    const to = keys[i + 1];
+    const fromTime = Number(from.time) || 0;
+    const toTime = Number(to.time) || 0;
+    if (time > toTime) continue;
+    const span = toTime - fromTime;
+    let t = span <= 0.0001 ? 1 : (time - fromTime) / span;
+    t = Math.min(1, Math.max(0, t));
+    if (to.smooth !== false) t = t * t * (3 - 2 * t);
+    return (Number(from.angle) || 0) + ((Number(to.angle) || 0) - (Number(from.angle) || 0)) * t;
+  }
+
+  return Number(keys[keys.length - 1].angle) || 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -4767,6 +5398,10 @@ function applyAnimationPreview() {
       const t = Math.min(1, Math.max(0, time / duration));
       const smooth = t * t * (3 - 2 * t);
       angle = THREE.MathUtils.lerp(Number(animation.stowed) || 0, Number(animation.deployed) || 0, smooth);
+    } else if (animation.type === 'keys') {
+      // The keys of the motion, the timeline loops over the duration.
+      const duration = Number(animation.duration) > 0 ? Number(animation.duration) : 0.0001;
+      angle = sampleAnimationKeys(animation, time % duration);
     } else {
       angle = (Number(animation.speed) || 0) * time;
     }
@@ -4833,12 +5468,25 @@ function updatePreviewUi() {
 
   const scrub = $('anim-scrub');
   if (scrub) {
-    const value = Math.min(Number(scrub.max), state.animPreview.time);
+    // The slider covers the whole timeline of the part.
+    const length = animationTimelineDuration();
+    if (Math.abs(Number(scrub.max) - length) > 0.001) scrub.max = String(length);
+    const value = Math.min(length, state.animPreview.time);
     if (Math.abs(Number(scrub.value) - value) > 0.001) scrub.value = value;
   }
 
   const label = $('anim-time');
   if (label) label.textContent = `${state.animPreview.time.toFixed(2)} s`;
+}
+
+// The length of the timeline: the longest motion of the part.
+function animationTimelineDuration() {
+  let longest = 2;
+  for (const animation of state.part.animations || []) {
+    const value = Number(animation.duration);
+    if (value > longest) longest = value;
+  }
+  return Math.ceil(longest);
 }
 
 function tickAnimationPreview() {
@@ -4847,6 +5495,7 @@ function tickAnimationPreview() {
   state.animPreview.time += delta;
   applyAnimationPreview();
   updatePreviewUi();
+  if (timeline) timeline.updatePlayhead();
 }
 
 function renderAnimations() {
@@ -4917,11 +5566,205 @@ function renderAnimations() {
     editor.append(animationField('foldTrigger', animation, 'trigger', t('anim.foldTrigger')));
     editor.append(animationField('tint', animation, 'color', t('anim.tint')));
     editor.append(animationField('tintAmount', animation, 'number', t('anim.tintAmount')));
+    if (animation.type === 'keys') {
+      editor.append(animationKeysEditor(animation, index));
+    }
     list.append(editor);
   });
 
   applyAnimationPreview();
   updatePreviewUi();
+  renderTimeline();
+}
+
+// ---------------------------------------------------------------------------
+// The timeline of the motions: one track per motion, the keys of a track can
+// be dragged, the playhead scrubs the preview in the viewport
+// ---------------------------------------------------------------------------
+
+let timeline = null;
+
+function initTimeline() {
+  const root = $('anim-timeline');
+  if (!root) return;
+
+  timeline = createTimeline(root, {
+    animations: () => state.part.animations || [],
+    time: () => state.animPreview.time,
+    selectedIndex: () => state.animation,
+    soloIndex: () => state.animPreview.only,
+    selectedKey: () => state.animPreview.key,
+    onScrub: (time) => setPreviewTime(time),
+    onSolo: (index) => previewSingle(index),
+    onRemove: (index) => removeAnimation(index),
+    onSelectKey: (track, key) => {
+      state.animPreview.key = { track, key };
+      state.animation = track;
+      renderAnimations();
+    },
+    onAddKey: (track, time, angle) => addAnimationKey(track, time, angle),
+    onChange: () => {
+      renderAnimations();
+      renderStatus();
+    },
+  });
+}
+
+function renderTimeline() {
+  if (timeline) timeline.render();
+}
+
+// The key that is selected in the timeline.
+function selectedAnimationKey() {
+  const selection = state.animPreview.key;
+  if (!selection) return null;
+  const animation = (state.part.animations || [])[selection.track];
+  const key = animation?.keys?.[selection.key];
+  if (!animation || !key) return null;
+  return { animation, key, track: selection.track, index: selection.key };
+}
+
+function addAnimationKey(track, time, angle) {
+  const animation = (state.part.animations || [])[track];
+  if (!animation || animation.type !== 'keys') return;
+
+  if (!Array.isArray(animation.keys)) animation.keys = [];
+  animation.keys.push({
+    time: Math.round(Number(time) * 100) / 100,
+    angle: Math.round(Number(angle) * 10) / 10,
+    smooth: true,
+  });
+  animation.keys.sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
+  state.animPreview.key = { track, key: animation.keys.length - 1 };
+  state.animation = track;
+  renderAnimations();
+  renderStatus();
+}
+
+function removeAnimationKey() {
+  const selection = selectedAnimationKey();
+  if (!selection) return;
+  selection.animation.keys.splice(selection.index, 1);
+  state.animPreview.key = null;
+  renderAnimations();
+  renderStatus();
+}
+
+function removeAnimation(index) {
+  state.part.animations.splice(index, 1);
+  if (state.animation === index) state.animation = null;
+  state.animPreview.only = null;
+  state.animPreview.key = null;
+  renderAnimations();
+  renderStatus();
+}
+
+// The keys of a motion with keyframes: the list of the keys, the fields of the
+// selected one and the buttons.
+function animationKeysEditor(animation, index) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'anim-keys';
+
+  const list = document.createElement('div');
+  list.className = 'compact-list';
+  const keys = Array.isArray(animation.keys) ? animation.keys : [];
+  keys.forEach((key, keyIndex) => {
+    const row = document.createElement('div');
+    const selected = state.animPreview.key?.track === index && state.animPreview.key?.key === keyIndex;
+    row.className = 'component-row' + (selected ? ' selected' : '');
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = `${(Number(key.time) || 0).toFixed(2)} s → ${(Number(key.angle) || 0).toFixed(1)}°`;
+    row.append(label);
+
+    row.addEventListener('click', () => {
+      state.animPreview.key = { track: index, key: keyIndex };
+      state.animation = index;
+      setPreviewTime(Number(key.time) || 0);
+      renderAnimations();
+    });
+    list.append(row);
+  });
+  wrapper.append(list);
+
+  const selection = selectedAnimationKey();
+  if (selection && selection.track === index) {
+    const time = document.createElement('div');
+    time.className = 'field';
+    const timeLabel = document.createElement('label');
+    timeLabel.textContent = t('anim.keyTime');
+    const timeInput = document.createElement('input');
+    timeInput.type = 'number';
+    timeInput.step = '0.01';
+    timeInput.value = Number(selection.key.time) || 0;
+    timeInput.addEventListener('input', () => {
+      selection.key.time = Number(timeInput.value) || 0;
+      renderAnimations();
+      renderStatus();
+    });
+    time.append(timeLabel, timeInput);
+    wrapper.append(time);
+
+    const angle = document.createElement('div');
+    angle.className = 'field';
+    const angleLabel = document.createElement('label');
+    angleLabel.textContent = t('anim.keyAngle');
+    const angleInput = document.createElement('input');
+    angleInput.type = 'number';
+    angleInput.step = '0.1';
+    angleInput.value = Number(selection.key.angle) || 0;
+    angleInput.addEventListener('input', () => {
+      selection.key.angle = Number(angleInput.value) || 0;
+      applyAnimationPreview();
+      renderAnimations();
+      renderStatus();
+    });
+    angle.append(angleLabel, angleInput);
+    wrapper.append(angle);
+
+    const smooth = document.createElement('label');
+    smooth.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = selection.key.smooth !== false;
+    box.addEventListener('change', () => {
+      selection.key.smooth = box.checked;
+      renderStatus();
+    });
+    const text = document.createElement('span');
+    text.textContent = t('anim.keySmooth');
+    smooth.append(box, text);
+    wrapper.append(smooth);
+  }
+
+  const buttons = document.createElement('div');
+  buttons.className = 'input-row';
+
+  const add = document.createElement('button');
+  add.className = 'btn small';
+  add.textContent = t('anim.addKey');
+  add.addEventListener('click', () => {
+    const time = state.animPreview.time;
+    addAnimationKey(index, time, sampleAnimationKeys(animation, time));
+  });
+  buttons.append(add);
+
+  const remove = document.createElement('button');
+  remove.className = 'btn small';
+  remove.textContent = t('anim.removeKey');
+  remove.disabled = !selection || selection.track !== index;
+  remove.addEventListener('click', removeAnimationKey);
+  buttons.append(remove);
+
+  wrapper.append(buttons);
+
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = t('anim.keysHint');
+  wrapper.append(hint);
+
+  return wrapper;
 }
 
 function animationTriggers() {
@@ -4997,7 +5840,15 @@ function animationField(key, animation, type, label, options) {
     }
     select.value = animation[key];
     select.addEventListener('change', () => {
+      const previous = animation[key];
       write(select.value);
+      // A motion with keys needs its keys: the first two of the timeline.
+      if (select.value === 'keys' && (!Array.isArray(animation.keys) || !animation.keys.length)) {
+        animation.keys = defaultAnimationKeys(Number(animation.duration) || 2);
+      }
+      if (previous === 'keys' && select.value !== 'keys') {
+        animation.keys = [];
+      }
       renderAnimations();
     });
     wrapper.append(select);
@@ -5925,6 +6776,13 @@ function toJson(part) {
         out.stowed = animation.stowed;
         out.deployed = animation.deployed;
         out.duration = animation.duration;
+      } else if (animation.type === 'keys') {
+        out.duration = animation.duration;
+        out.keys = (animation.keys || []).map((key) => ({
+          time: Number(key.time) || 0,
+          angle: Number(key.angle) || 0,
+          smooth: key.smooth !== false,
+        }));
       } else {
         out.speed = animation.speed;
       }
@@ -6031,6 +6889,7 @@ $('btn-new').addEventListener('click', () => {
   state.component = null;
   disposeModel();
   clearPreviewTextures();
+  state.flame = defaultFlame(ENGINE_FLAMES[0]);
   $('drop-hint').style.display = '';
   fillForm();
   refreshStructure();
@@ -6246,9 +7105,13 @@ function refreshStructure() {
   renderVariants();
   renderLibrary();
   renderEngineEffects();
+  renderFlameEditor();
   renderExportParts();
   updateModelInfo();
   refreshScene();
+  // After the scene: the flame preview and the marker of the force point live in
+  // the overlay, which the scene refresh clears.
+  updateFlamePreview();
   renderStatus();
 }
 
@@ -6264,6 +7127,8 @@ function init() {
   populateNodeMaterialSelect();
   populateStockSelect().catch(() => {});
   loadLibrary();
+  initTimeline();
+  initFlameCurve();
   $('lang-select').addEventListener('change', () => {
     localStorage.setItem('partadder.editor.lang', getLang());
   });
@@ -6279,6 +7144,7 @@ function init() {
 
   renderer.setAnimationLoop(() => {
     tickAnimationPreview();
+    tickFlamePreview();
     orbit.update();
     renderer.render(scene, camera);
   });

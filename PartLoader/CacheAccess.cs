@@ -19,6 +19,8 @@ namespace PartRotatorExtension.PartLoader
         private static FieldInfo postprocessField;
         private static FieldInfo bakerField;
         private static FieldInfo spritesField;
+        private static FieldInfo prefabsField;
+        private static FieldInfo soundsField;
 
         internal static void EnsureInitialized()
         {
@@ -39,6 +41,22 @@ namespace PartRotatorExtension.PartLoader
             }
 
             spritesField = RequireField(typeof(SpriteCache), "sprites");
+
+            // The flames of the engines live in the prefab cache of the game, the
+            // sounds of the engines in its audio cache.
+            PrefabCache prefabCache = CacheStore.prefabs;
+            if (prefabCache == null)
+            {
+                throw new InvalidOperationException("CacheStore.prefabs is not available yet");
+            }
+
+            prefabsField = RequireField(typeof(PrefabCache), "prefabs");
+
+            AudioCache audioCache = CacheStore.audio;
+            if (audioCache != null)
+            {
+                soundsField = RequireField(typeof(AudioCache), "sounds");
+            }
         }
 
         private static FieldInfo RequireField(Type type, string name)
@@ -81,6 +99,88 @@ namespace PartRotatorExtension.PartLoader
             }
 
             return spritesField.GetValue(spriteCache) as Dictionary<string, Sprite>;
+        }
+
+        /// <summary>
+        /// The prefab cache of the game holds the flame prefabs of the engines.
+        /// </summary>
+        internal static bool TryGetPrefab(string name, out GameObject prefab)
+        {
+            prefab = null;
+            PrefabCache cache = CacheStore.prefabs;
+            if (cache == null || prefabsField == null)
+            {
+                return false;
+            }
+
+            var prefabs = prefabsField.GetValue(cache) as Dictionary<string, GameObject>;
+            return prefabs != null && prefabs.TryGetValue(name, out prefab);
+        }
+
+        /// <summary>
+        /// Puts a prefab into the cache of the game, so the game can find it by
+        /// name (the flames of the engines are taken from there).
+        /// </summary>
+        internal static bool TrySetPrefab(string name, GameObject prefab)
+        {
+            PrefabCache cache = CacheStore.prefabs;
+            if (cache == null || prefabsField == null || prefab == null)
+            {
+                return false;
+            }
+
+            var prefabs = prefabsField.GetValue(cache) as Dictionary<string, GameObject>;
+            if (prefabs == null)
+            {
+                return false;
+            }
+
+            prefabs[name] = prefab;
+            return true;
+        }
+
+        /// <summary>
+        /// Puts a sound into the audio cache of the game, so the engines can
+        /// play it by name (AudioController.GetSound).
+        /// </summary>
+        internal static bool TrySetSound(string name, AudioClip clip)
+        {
+            AudioCache cache = CacheStore.audio;
+            if (cache == null || soundsField == null || clip == null)
+            {
+                return false;
+            }
+
+            var sounds = soundsField.GetValue(cache) as Dictionary<string, AudioClip>;
+            if (sounds == null)
+            {
+                return false;
+            }
+
+            sounds[name] = clip;
+            return true;
+        }
+
+        /// <summary>
+        /// Says if the game knows a sound: the name has to be in the audio cache,
+        /// otherwise AudioController.GetSound returns null and the engine stays
+        /// silent. A null result means the cache itself could not be read.
+        /// </summary>
+        internal static bool? HasSound(string name)
+        {
+            AudioCache cache = CacheStore.audio;
+            if (cache == null || soundsField == null)
+            {
+                return null;
+            }
+
+            var sounds = soundsField.GetValue(cache) as Dictionary<string, AudioClip>;
+            if (sounds == null)
+            {
+                return null;
+            }
+
+            return !string.IsNullOrEmpty(name) && sounds.ContainsKey(name) && sounds[name] != null;
         }
     }
 }

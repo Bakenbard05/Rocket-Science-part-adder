@@ -79,8 +79,13 @@ namespace PartRotatorExtension.PartLoader
 
             // RocketPartCtrl.CreateModel reads these two children from the addressable model
             // without null checks, and PlacablePart toggles them between attachment and solid view.
-            AddModeChild(model.transform, AttachmentsModeName);
-            AddModeChild(model.transform, SolidModeName);
+            // "attachments_mode" has to start inactive: RocketPartCtrl.isInAttachmentsMode returns
+            // attachmentsMode.activeSelf, and the hover highlight (OnPointerEnter) only runs when
+            // that is false. The stock prefabs ship it inactive and only the shop ghost switches
+            // it on (PlacablePart.CreateModel -> AttachmentsMode), so an active child would keep
+            // every mod part in "attachments mode" and the green hover glow would never appear.
+            AddModeChild(model.transform, AttachmentsModeName, false);
+            AddModeChild(model.transform, SolidModeName, true);
 
             WarnAboutModelTransform(model, definition.Id);
 
@@ -122,6 +127,21 @@ namespace PartRotatorExtension.PartLoader
             var assemblyCollider = assemblyPhysics.AddComponent<BoxCollider>();
             assemblyCollider.center = built.Bounds.center;
             assemblyCollider.size = NonZero(built.Bounds.size, 0.1f);
+
+            // The game picks the part under the mouse only by this tag: the raycasts in
+            // AssemblyShopPlacer.RaycastParent, ObjectPlacer.AdjustPosition and
+            // PlacablePart.GetPenetration look for "AssemblyCollider" colliders on the "Rocket"
+            // layer. Without the tag our parts are invisible to them: new parts do not snap to
+            // them and the placement ghost never sees them as an obstacle.
+            try
+            {
+                assemblyPhysics.tag = Tag.assemblyCollider;
+            }
+            catch (Exception)
+            {
+                Diagnostics.Warn("Tag '" + Tag.assemblyCollider + "' is not defined in this build; " +
+                                 "the assembly collider of the part stays untagged");
+            }
 
             var attachments = new GameObject(AttachmentsName);
             attachments.transform.SetParent(root.transform, false);
@@ -215,10 +235,11 @@ namespace PartRotatorExtension.PartLoader
             return string.Join("/", parts.ToArray());
         }
 
-        private static void AddModeChild(Transform parent, string name)
+        private static void AddModeChild(Transform parent, string name, bool active)
         {
             var child = new GameObject(name);
             child.transform.SetParent(parent, false);
+            child.SetActive(active);
         }
 
         private static void SetLayer(GameObject gameObject, int layer)

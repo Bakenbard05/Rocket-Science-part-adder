@@ -448,6 +448,164 @@ temperature the part will settle at, and the field **Thermal area** writes this
 override (`4 × silhouette`, the area of a smooth body, gives the same temperature
 as the stock parts).
 
+## The flame and the sound of an engine
+
+The game does not build a flame from data: it takes a prefab of the engine
+(`ContinuousFlame.Setup` → `CacheStore.prefabs`), copies its material and drives
+the shader every frame (the throttle, the pressure, the fade of the length). The
+sound comes from the audio cache (`AudioController.GetSound` →
+`CacheStore.audio`). Both caches are private, so the loader puts its own objects
+into them and the part names them.
+
+The flames of an engine are the names in the `flames` list of the module
+`Model.EngineEffectsModule`. A name the game knows is a flame prefab of the game
+(`engine_0_flame` and the other fourteen). **A name the game does not know is a
+custom flame of the part**: the loader builds it from the file
+`flames/<name>.json` in the part folder and registers it in the game under that
+name.
+
+The file `flame.json` is the flame of the part itself. It is used when the list
+of the engine does not name a custom flame, and it replaces the list then: the
+part has exactly one flame, the one of the file. If the list names a custom
+flame, the file `flame.json` is not used (the loader says so in the log and
+the check section of the editor warns about it).
+
+A part folder may carry these extra files:
+
+| file | what it is |
+|---|---|
+| `flames/<name>.json` | a custom flame: the base flame, the parameters and the profile |
+| `flame.json` | the flame of the part itself (it replaces the list of the flames) |
+| `sound.wav` | the sound of the engine (optional, PCM 16 bit) |
+
+```json
+{
+  "base": "engine_0_flame",
+  "params": {
+    "color": [0.6911, 0.784, 2.8729],
+    "rimColor": [44.727, 10.772, 2.3417],
+    "size": 2.5,
+    "rimPower": 2.59,
+    "flameLevel": 1.55,
+    "brightness": 1,
+    "intensity": 6.76,
+    "lengthFade": 1,
+    "blend": 1,
+    "speed": 2.25,
+    "pow": 1.89,
+    "taper": [0, 0],
+    "move": 0,
+    "scroll": [1.17, 2.2],
+    "flipbook": [1, 1],
+    "flutter": [1, 0.1, 0.44],
+    "pulse": [0.7, 0.1, 1],
+    "angle": [0, 0, 1.89],
+    "against": [0.248, 5.1],
+    "scale": [1, 1, 1],
+    "soften": [1, 0.7, 0.6],
+    "noiseST": [1, 0.15, 0, 0]
+  },
+  "profile": [
+    { "v": 0, "r": 0 },
+    { "v": 0.015, "r": 0.038 },
+    { "v": 0.048, "r": 0.067 },
+    { "v": 0.349, "r": 0.11 },
+    { "v": 0.502, "r": 0.116 },
+    { "v": 0.785, "r": 0.119 },
+    { "v": 1, "r": 0.12 }
+  ]
+}
+```
+
+`base` is the flame prefab of the game the flame is cloned from (the fifteen
+`engine_*_flame` prefabs); the parameters are written on the material of that
+clone and are the names of the shader, so the flame flickers, waves and reacts
+to the throttle and the pressure exactly like the stock ones. Only the
+parameters that are listed are changed, the rest stays as the game has it.
+
+The colors are HDR (the rim of `engine_0_flame` is 44.7), so they are written as
+the three numbers of the shader; a hex string is accepted as well.
+
+The editor starts from the values of the chosen stock flame: they are read out
+of the assets of the game into `flame-presets.js`
+(`tools/part-editor/generate-flame-presets.py`, needs UnityPy). So the exported
+values are the stock ones and the flame in the game looks exactly like the
+flame of the game until a value is changed.
+
+**The shape of the flame is the profile**: the game draws the flame with its
+shader, which builds it out of the *desc* of the flame (`FlameDesc`): the curve
+of the radius along the length (`vacuumProfileCrv` / `seaLevelProfileCrv`), the
+length of the layer and its radius. The mesh of the flame prefab is only a flat
+ring, the shader makes the shape. So `profile` is the curve of the radius of
+the flame in **metres**: `v` is the place along the flame (0 at the nozzle, 1 at
+the end) and `r` is the radius there. The editor draws that curve and the
+author drags the points.
+
+**The size of the flame** is not a material value either: `size` is the
+**length of the flame in metres** (`size: 2.5` is a flame of 2.5 metres,
+whatever the base flame of the game looks like). The shader draws the flame out
+of the desc, and one unit of the desc is one metre (the flame of `engine_0` has
+a desc of 30 units and is 3 m long in the game; its mesh is only a tube of UV
+rings, its height comes from the shader), so the loader scales the length of
+the layer to `size` and keeps the width from the profile. The profile of the
+flame carries the width in metres, the length comes from the size.
+
+The flame is placed at the force point of the engine, so it comes out of the
+nozzle. The flames of the game hide their tip inside the engine (the offset of
+`engine_0_flame` is 1.5 m, about half of its length), but that offset belongs
+to the engine and not to the flame.
+
+`lengthFade` (the parameter **Visibility**) is not the length either: it is how
+much of the flame is visible, the game fades the flame out with it when the
+engine stops. `scale` (the parameter **Scale in the shader**) is the scale of
+the shader itself.
+
+The loader registers the flame and the sound in the caches of the game under
+the names of the part (`<prefab>_flame`, `<prefab>_sound`) and writes them into
+the module `Model.EngineEffectsModule` (`flames`, `sound`). The module is
+created when the part has an engine (`Model.EngineModule`), so a part with an
+engine needs nothing but the files above.
+
+### The sound of the engine
+
+`sound` of the module is a name in the audio cache of the game: either a stock
+sound (`rocket_engine_heavy` and the other thirteen) or the `sound.wav` of the
+part, which the loader registers as `<prefab>_sound`. The game plays it as a
+loop on the `module_sounds` prefab (`ModuleContinuousSounds` of
+`EngineModuleCtrl`) and keeps its volume between 0.7 and 1
+(`volumeRange` of the controller, remapped by the limited throttle), so the
+engine is heard even at the minimum throttle; the loop is stopped when the
+engine stops (thrust or thrust limiter zero, or the engine disabled), not when
+the throttle is low.
+
+`startSound` and `endSound` are optional, and **not a single stock engine has
+them**. The game plays the start sound once at ignition, plays the stop sound
+**in full** at shutdown, and postpones the fade of the loop by 0.9 of the length
+of the start sound. A long loop put into both fields (the usual mistake when the
+editor writes them) leaves the engine roaring after the thrust is zero, so the
+loader drops a pair that is equal to each other or to `sound` itself, and a name
+the game does not know; it says so in `PartAdder.log`. Leave both empty unless
+you have a real short ignition/shutdown clip.
+
+**The module needs an entry in the `state` as well.** The game creates the
+modules of a part by walking its state (`RocketPart.DeserializeConfig`): a
+module of the `config` without an entry in the `state` is never created, so the
+flame and the sound of the engine stay missing. The stock parts have
+`"Model.EngineEffectsModule": {}` in their state:
+
+```json
+"state": {
+  "Model.EngineModule": { "thrustLimiter": 1 },
+  "Model.EngineEffectsModule": {}
+}
+```
+
+The loader adds the entry if it is missing and warns about every other module
+without one; the editor writes it and the check section reports it.
+
+The editor writes the files: the section **Flame** has the parameters, an
+animated preview in the viewport and the field for the own mesh.
+
 ## Settings
 
 An optional `PartAdder.json` next to the DLL changes the behaviour of the mod:

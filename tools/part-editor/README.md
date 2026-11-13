@@ -182,12 +182,46 @@ a dropdown) and the flame prefabs (the fifteen flame prefabs of the game). The f
 are prefabs of the game that are placed at the force point of the engine, not
 objects of your mesh.
 
-The **Flame preview** draws that flame in the viewport: a cone at the force point of
+The **Flame preview** draws that flame in the viewport: at the force point of
 `Model.EngineModule`, exactly where the game puts it. Its length follows the thrust
 of the engine and the throttle slider, so you can see whether the nozzle sticks out
 of the mesh. The sounds of the game live inside its asset bundles and cannot be
 played by a browser — the sound field takes a file of your own, and the throttle
 sets its volume.
+
+**Flame** section tunes the flame itself. The game never builds a flame from data:
+it takes a flame prefab of the engine, copies its material and drives the shader
+every frame (the throttle, the pressure, the fade of the length), so the flame
+flickers, waves and reacts to the throttle exactly like the stock ones. The section
+has the base flame (the fifteen flame prefabs of the game), the numbers of the
+material — the names of the shader, so they are the same in the game — the length
+of the flame and the field for your own mesh of the flame.
+
+**Custom flames** are saved under a name: type a name and press **Save as new**,
+the flame joins the list of the section (the library of the part, it is written to
+the folder `flames` of the pack and travels with the part in the library). The
+arrow button of a saved flame puts it into the list of the flames of the engine
+(**Engine effects** → **Flame prefabs**), where the stock flames of the game and
+your own ones are both offered. The loader builds a flame of the part from
+`flames/<name>.json` and registers it in the game under that name, so the engine
+uses your flame instead of the stock one.
+
+**Open a flame file** loads a `flame.json` (of a part or of a saved flame) into
+the editor, so a flame can be compared with the one in the game.
+
+Picking a base flame fills the fields with the values that flame has in the game:
+they are read out of the assets of the game into `flame-presets.js`
+(`generate-flame-presets.py`, needs UnityPy), so the preview shows the stock flame
+and the exported values are the stock ones until something is changed. The colors
+of the game are HDR (the rim of `engine_0_flame` is 44.7), so they are kept as
+the numbers of the shader and the field shows the plain colour.
+
+The length and the width of a flame come from its geometry: the flame of a part
+gets its own cone (the stock flame prefabs only give the shader) and
+**Length of the flame** is that length in metres — the preview in the viewport
+draws the same cone in the same size. The preview is a shader of our own (the
+shader of the game cannot run in a browser), but it uses the same numbers and
+the same rules, so what you see is what the flame does in the game.
 
 **Check** runs the checks that otherwise only show up in the log of the game: the
 mesh has triangles, the defindex, the modules are known to the game, the textures
@@ -283,6 +317,9 @@ orientation again, because the game mirrors it once more.
 ```text
 index.html      layout and form
 app.js          three.js preview, gizmo, model loading, validation, JSON I/O
+flame.js        the parameters of the flame of the engine and its preview shader
+flame-presets.js  generated: the values of the stock flames of the game
+generate-flame-presets.py  regenerates flame-presets.js from the assets of the game
 examples.js     built-in part examples (mirrors docs/EXAMPLES.md)
 components.js   component registry: stock modules with typed fields (mirrors docs/MODULES.md)
 presets.js      socket layouts, categories, units, flags (mirrors AttachmentPresets.cs)

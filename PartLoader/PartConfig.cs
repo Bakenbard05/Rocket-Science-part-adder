@@ -75,6 +75,19 @@ namespace PartRotatorExtension.PartLoader
         [JsonProperty("trigger")] public string Trigger;
         /// <summary>Trigger that folds the node back, see PartAnimationDriver.</summary>
         [JsonProperty("foldTrigger")] public string FoldTrigger;
+        /// <summary>Keyframes of the motion ("keys"), see PartAnimationDriver.</summary>
+        [JsonProperty("keys")] public AnimationKeyDefinition[] Keys;
+    }
+
+    /// <summary>
+    /// One keyframe of a motion: the angle of the node at that time.
+    /// </summary>
+    internal sealed class AnimationKeyDefinition
+    {
+        [JsonProperty("time")] public float Time;
+        [JsonProperty("angle")] public float Angle;
+        /// <summary>True (the default) interpolates the segment smoothly, false linearly.</summary>
+        [JsonProperty("smooth")] public bool? Smooth;
     }
 
     internal sealed class MaterialDefinition

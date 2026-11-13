@@ -351,12 +351,29 @@ namespace PartRotatorExtension.PartLoader
                 prefabRoot = built.Root;
 
                 string iconName = IconFactory.Resolve(definition, partDirectory, pack.Id, category, cache, built.Model, material);
+
+                // The flame and the sound of the engine: the loader puts them
+                // into the caches of the game and writes their names into the
+                // module of the effects, so the part.json does not have to know
+                // the names of the caches.
+                EngineEffects.Apply(definition, partDirectory, prefabKey);
+
                 RocketPartSchema schema = SchemaFactory.Create(definition, built, category, defindex, prefabKey, iconName);
+
+                WarnAboutModulesWithoutState(definition);
 
                 PostprocessPartData postprocessData = PartPostprocessor.Bake(schema, prefabRoot, baker);
                 schema = SchemaFactory.Finalize(schema, definition.Overrides);
 
                 AddAnimationDriver(prefabRoot, definition);
+
+                // The game creates the modules of a part by walking its state, so
+                // the log of the loader can not tell whether the modules of the
+                // part exist in the game. The diagnostics write it in the flight.
+                if (definition.Modules != null && definition.Modules[EngineEffects.EffectsModule] != null)
+                {
+                    prefabRoot.AddComponent<PartDiagnostics>();
+                }
 
                 // The game loads the visible mesh from Addressables at runtime instead of using
                 // a "model" child of the prefab, so the baked model becomes the addressable asset.
@@ -489,6 +506,19 @@ namespace PartRotatorExtension.PartLoader
         {
             EnsureTemplatesRoot();
             model.transform.SetParent(templatesRoot, false);
+        }
+
+        /// <summary>
+        /// Parks the flame template of an engine. Its own transform (the offset of
+        /// the flame and the size the part asked for) is kept, because the game
+        /// copies the template and keeps its local transform. The template stays
+        /// active: the game clones it and the clone has to run its Awake (the flame
+        /// builds its mesh there), an inactive template would postpone it.
+        /// </summary>
+        internal static void ParkFlameTemplate(GameObject flame)
+        {
+            EnsureTemplatesRoot();
+            flame.transform.SetParent(templatesRoot, false);
         }
 
         /// <summary>
@@ -1016,6 +1046,35 @@ namespace PartRotatorExtension.PartLoader
         /// instantiated by the game after the part is placed, so the driver resolves its
         /// nodes at runtime instead of at build time.
         /// </summary>
+        /// <summary>
+        /// The game creates the modules of a part by walking its state
+        /// (RocketPart.DeserializeConfig): a module of the config without an entry
+        /// in the state is never created, so the part behaves as if the module was
+        /// not there at all.
+        /// </summary>
+        private static void WarnAboutModulesWithoutState(PartDefinition definition)
+        {
+            if (definition.Modules == null || definition.State == null)
+            {
+                return;
+            }
+
+            var missing = new List<string>();
+            foreach (var property in definition.Modules.Properties())
+            {
+                if (definition.State[property.Name] == null)
+                {
+                    missing.Add(property.Name);
+                }
+            }
+
+            if (missing.Count > 0)
+            {
+                Diagnostics.Warn(definition.Id + ": module(s) without an entry in the state, the game will not create them: " +
+                                 string.Join(", ", missing));
+            }
+        }
+
         private static void AddAnimationDriver(GameObject prefabRoot, PartDefinition definition)
         {
             if (definition.Animations == null || definition.Animations.Length == 0)
@@ -1033,16 +1092,38 @@ namespace PartRotatorExtension.PartLoader
                 }
 
                 string type = string.IsNullOrEmpty(animation.Type) ? "spin" : animation.Type.Trim().ToLowerInvariant();
-                if (type != "spin" && type != "deploy")
+                if (type != "spin" && type != "deploy" && type != "keys")
                 {
                     throw new InvalidOperationException("animation #" + (i + 1) + ": unknown type '" + animation.Type +
-                                                        "' (use spin or deploy)");
+                                                        "' (use spin, deploy or keys)");
                 }
 
                 Vector3 axis;
                 if (!JsonHelp.TryVector3(animation.Axis, out axis) || axis.sqrMagnitude < 0.0001f)
                 {
                     axis = Vector3.up;
+                }
+
+                var keys = new List<AnimationKey>();
+                if (animation.Keys != null)
+                {
+                    for (int k = 0; k < animation.Keys.Length; k++)
+                    {
+                        AnimationKeyDefinition key = animation.Keys[k];
+                        if (key == null)
+                        {
+                            continue;
+                        }
+
+                        keys.Add(new AnimationKey
+                        {
+                            time = key.Time,
+                            angle = key.Angle,
+                            smooth = key.Smooth ?? true
+                        });
+                    }
+
+                    keys.Sort((a, b) => a.time.CompareTo(b.time));
                 }
 
                 entries.Add(new PartAnimationEntry
@@ -1055,7 +1136,8 @@ namespace PartRotatorExtension.PartLoader
                     deployed = animation.Deployed ?? 0f,
                     duration = animation.Duration ?? 1f,
                     trigger = animation.Trigger,
-                    foldTrigger = animation.FoldTrigger
+                    foldTrigger = animation.FoldTrigger,
+                    keys = keys.ToArray()
                 });
             }
 

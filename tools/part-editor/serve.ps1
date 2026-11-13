@@ -84,7 +84,11 @@ while ($listener.IsListening) {
         $ext = [System.IO.Path]::GetExtension($full).ToLowerInvariant()
         $response.ContentType = if ($types.ContainsKey($ext)) { $types[$ext] } else { 'application/octet-stream' }
         $response.ContentLength64 = $bytes.Length
-        $response.Headers['Cache-Control'] = 'no-cache'
+        # No cache at all: the editor changes its modules all the time and a
+        # stale module in the browser is worse than a reload.
+        $response.Headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        $response.Headers['Pragma'] = 'no-cache'
+        $response.Headers['Expires'] = '0'
         $response.OutputStream.Write($bytes, 0, $bytes.Length)
     } catch {
         $response.StatusCode = 500

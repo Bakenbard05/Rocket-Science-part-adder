@@ -55,6 +55,25 @@ namespace PartRotatorExtension.PartLoader
 
         /// <summary>How strong the tint is (0..1).</summary>
         public float tintAmount = 1f;
+
+        /// <summary>Keyframes of the motion ("keys"): the angle of the node over the time.</summary>
+        public AnimationKey[] keys;
+    }
+
+    /// <summary>
+    /// One keyframe of a motion: the angle of the node at that time.
+    /// </summary>
+    [Serializable]
+    public sealed class AnimationKey
+    {
+        /// <summary>Time of the key in seconds.</summary>
+        public float time;
+
+        /// <summary>Angle of the node in degrees.</summary>
+        public float angle;
+
+        /// <summary>True (the default) interpolates the segment smoothly, false linearly.</summary>
+        public bool smooth = true;
     }
 
     /// <summary>
@@ -87,6 +106,7 @@ namespace PartRotatorExtension.PartLoader
             internal float FromAngle;
             internal float ToAngle;
             internal float Elapsed;
+            internal float Time;
             internal bool Animating;
         }
 
@@ -187,6 +207,17 @@ namespace PartRotatorExtension.PartLoader
                     continue;
                 }
 
+                if (IsKeys(motion.Entry))
+                {
+                    // The keyframes of the motion, the timeline loops over the duration.
+                    motion.Time += deltaTime;
+                    float duration = motion.Entry.duration > 0f ? motion.Entry.duration : 0.0001f;
+                    float time = motion.Time % duration;
+                    motion.Angle = SampleKeys(motion.Entry.keys, time);
+                    Apply(motion);
+                    continue;
+                }
+
                 motion.Angle += motion.Entry.speed * deltaTime;
                 Apply(motion);
             }
@@ -195,6 +226,55 @@ namespace PartRotatorExtension.PartLoader
         private static bool IsDeploy(PartAnimationEntry entry)
         {
             return string.Equals(entry.type, "deploy", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsKeys(PartAnimationEntry entry)
+        {
+            return string.Equals(entry.type, "keys", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The angle of a motion with keyframes at the given time. The segments are
+        /// interpolated smoothly unless the key says otherwise.
+        /// </summary>
+        internal static float SampleKeys(AnimationKey[] keys, float time)
+        {
+            if (keys == null || keys.Length == 0)
+            {
+                return 0f;
+            }
+
+            if (keys.Length == 1)
+            {
+                return keys[0].angle;
+            }
+
+            if (time <= keys[0].time)
+            {
+                return keys[0].angle;
+            }
+
+            for (int i = 0; i < keys.Length - 1; i++)
+            {
+                AnimationKey from = keys[i];
+                AnimationKey to = keys[i + 1];
+                if (time > to.time)
+                {
+                    continue;
+                }
+
+                float span = to.time - from.time;
+                float t = span <= 0.0001f ? 1f : (time - from.time) / span;
+                t = Mathf.Clamp01(t);
+                if (to.smooth)
+                {
+                    t = t * t * (3f - 2f * t);
+                }
+
+                return Mathf.Lerp(from.angle, to.angle, t);
+            }
+
+            return keys[keys.Length - 1].angle;
         }
 
         private void Apply(Motion motion)
