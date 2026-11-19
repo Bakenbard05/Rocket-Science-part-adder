@@ -50,7 +50,7 @@ Optional. Without it the folder name is used as the pack id.
 | `name` | string | no | Shop name. Defaults to `id`. |
 | `description` | string | no | Shop description. |
 | `category` | string | **yes** | Shop category, see below. |
-| `mass` | number | **yes** | Mass in kg, must be positive. |
+| `mass` | number | no | Mass in kg, must be positive. Without it the loader computes the mass from the volume of the mesh (1000 kg/m³). |
 | `tags` | string[] | no | Free-form search tags. |
 | `impactTolerance` | number | no | Impact tolerance in m/s. Default `10`. |
 | `assemblyPosition` | int | no | Editor sort order inside the category. Default `0`. |
@@ -64,7 +64,9 @@ Optional. Without it the folder name is used as the pack id.
 | `attachments` | array | **yes** | Attachment points, at least one. |
 | `cableAttachments` | array | no | Points where cables can be routed. |
 | `centerOfMassAdjustment` | vector | no | Offset of the centre of mass, in metres. Default `[0, 0, 0]`. |
-| `radialSnapping` | number | no | Radial symmetry step in degrees. Default `0` (off). |
+| `radialSnapping` | number | no | Radial symmetry step in degrees. Default `-1`: keep the symmetry setting of the player (`0` disables the snapping). |
+| `dynamicAttachmentConfigs` | array | no | Surface sockets: `{ "defindex": 10001000, "shape": "single, dual" }`. See [Surface sockets](#surface-sockets). |
+| `dynamicCurrPivot` | vector | no | Point inside the hull the game aims at when this part is placed on another one. Default `[0, 0, 0]`. |
 | `modules` | object | no | Module config, copied to the schema verbatim. See [MODULES.md](MODULES.md). |
 | `state` | object | no | Initial module state, copied verbatim. |
 | `thermo` | object | no | Thermal config, copied to `RocketPartSchema.thermoConfig`. |
@@ -73,9 +75,15 @@ Optional. Without it the folder name is used as the pack id.
 `formatVersion`, `id`, `name`, `description`, `category`, `mass`, `tags`,
 `impactTolerance`, `assemblyPosition`, `defindex`, `model`, `units`, `scale`,
 `physicsModel`, `icon`, `material`, `attachments`, `cableAttachments`,
-`centerOfMassAdjustment`, `radialSnapping`, `modules`, `state`, `thermo` and
+`centerOfMassAdjustment`, `radialSnapping`, `dynamicAttachmentConfigs`,
+`dynamicCurrPivot`, `modules`, `state`, `thermo` and
 `overrides` are all the fields the loader understands. Unknown fields are reported in
 the log and ignored, so typos are visible.
+
+The list of the fields and their types lives in one place: the schema
+[`part.schema.json`](part.schema.json). The loader has it in the DLL and checks
+every part against it; the part editor reads the same file and shows the same
+errors, so the editor and the game cannot disagree about what a part.json is.
 
 ### Categories
 
@@ -173,7 +181,7 @@ explicit `id`s if you ever reorder the array.
 | `size` | vector | Explicit connection box size `[x, y, z]`, overriding the preset. |
 | `center` | vector | Centre of the connection box relative to `position`. Default `[0, 0.1, 0]`. |
 | `sockets` | vector[] | Explicit socket offsets in the attachment's local plane (Y is the normal). Overrides the preset layout. |
-| `flags` | string | `none` (default), `dynamic`, `primary`, `axial`, or a combination such as `"dynamic, primary"`. An array of these names (`["dynamic", "primary"]`) is also accepted, but the string form is canonical. |
+| `flags` | string | `none` (default), `primary`, `axial`, or a combination such as `"primary, axial"`. An array of these names (`["primary", "axial"]`) is also accepted, but the string form is canonical. Do not put `dynamic` on a fixed connection: the game deletes such a connection when the part is detached, so the loader strips the flag with a warning. Use `dynamicAttachmentConfigs` for a surface socket. |
 
 Available shape presets, copied from stock parts: `single`, `dual`, `triple`,
 `triangle`, `rectangle`, `butterfly`, `hexagon`, `hexdual`, `line`, `wide`, `broad`,
@@ -199,6 +207,63 @@ They are simple named transforms:
   { "id": 0, "position": [0.45, 0.2, 0.45] }
 ]
 ```
+
+### Surface sockets
+
+A dynamic socket is a connection the game creates on the surface of a part
+itself: the player drops a part onto the hull and the game picks the point and
+the normal. A part can receive such a part on its own hull, be stuck onto the
+hull of another part, or both.
+
+```json
+"dynamicAttachmentConfigs": [
+  { "defindex": 10001000, "shape": "single, dual" },
+  { "defindex": -10001000, "shape": "single" }
+],
+"dynamicCurrPivot": [0, -0.2, 0],
+```
+
+`defindex` is a config of the game, never an id of your own. Its sign says which
+end it is: a positive id makes the socket one that receives a part on the
+surface of this one, a negative one lets this part be put onto the surface of
+another one. Two parts only connect when one carries the receiving config and
+the other the matching attaching one, and the shapes have to be compatible in
+the same way as for fixed connections (`rectangle` also takes `hexagon` and
+`heptahedron`, for example).
+
+| Defindex | Kind | Where the socket may sit |
+| --- | --- | --- |
+| `10001000`..`10001003`, `10001100`..`10001105` | receiving, ring | anywhere around the ring axis; the higher ids restrict it to a band of angles (`10001101` ±45°, `10001102` −45°..0°, `10001104` 0°..85°, `10001100` only 54°..57°) |
+| `20001000`, `20001100` | receiving, cap | anywhere on the cap around `up` |
+| `30001000`..`30001018`, `30001100`..`30001129` | receiving, side | anywhere on the hull, the socket keeps one world direction (up, down, the six sides, the diagonals) |
+| `-10001000`, `-10001102`..`-10001105` | attaching, ring | this part sticks to a ring socket |
+| `-30001000`..`-30001018` | attaching, side | this part sticks to a side socket |
+
+The game has no attaching cap config and not every receiving id has an attaching
+twin (`20001000` receives, but no negative `-20001000` exists): a part can offer
+a cap where nothing can attach.
+
+The ids are the ones the game registers in its own cache; the editor lists them
+by role and shape (`dynamic-presets.js` is generated from the game's assets by
+`tools/part-editor/generate-dynamic-presets.py`). A defindex the game does not
+know would throw inside `RocketPartSchema.ProcessDynamicAttachments`, so the
+loader checks every id against `RocketPartCache.GetDynamicAttachConfig` before
+the part is baked and drops the socket with a warning. `shape` is a comma
+separated list of `ConnectionShape` names; `all` is refused (it would create a
+socket for every shape the game knows).
+
+`dynamicCurrPivot` is the point inside the hull the game aims at when this part
+is placed on another one: the game casts a ray from the surface of the part
+towards it (`AssemblyShopPlacer.RaycastCurrent`). The origin is inside most
+meshes; a hollow part can put it slightly deeper (`engine_0` uses
+`[0, -0.2, 0]`). The loader warns when the pivot is outside the baked hull, and
+the editor's Check section reports the same.
+
+The editor has a **Dynamic sockets** section: the defindex is picked from the
+stock configs, the shapes are checkboxes, the pivot has a field and a **Pivot
+from mesh** button, and the probe button (`◎`) places a ghost socket on the
+hull under the pointer, turned the way the game would turn it and coloured by
+whether the surface satisfies the restriction of that config.
 
 ### Modules and state
 
@@ -234,6 +299,15 @@ visual name, the default explosion effect) is applied to modded parts too. The p
 editor has normal fields for the values of `thermo` (heat capacity, conductivity,
 conductivity of the skin, emissivity, absorption, density of the skin, maximum
 temperature inside and of the skin); only the changed values are written.
+
+One thermal value is corrected by the loader, like the game does on load: the skin of
+the part is a 2.5 mm sheet over the whole baked area (`skinDensity × 0.0025 × area`),
+and when that weighs more than the part itself, the temperature of the whole rocket
+goes NaN in flight. The loader cuts `skinDensity` so the skin weighs 25 % of the mass
+(the game's own `ValidateAfterMerge` clamp, applied after the `overrides` merge —
+`ValidateAfterMerge` runs before the round-trip and would otherwise be lost). A large
+light part — a fairing with tens of m² of area at a hundred kg — is the typical case;
+the loader logs the clamp, and the editor's **Check** warns the same way.
 
 ### Variants
 
@@ -333,6 +407,12 @@ Something has to change the state, otherwise it stays in the first one:
 | `Model.DockingPortModule` | docked / undocked |
 | `Model.SelfDestructionModule` | triggered / exploded |
 | `Model.ParachuteModule`, `Model.PilotChuteModule` | deployed |
+| `Model.SolarPanelModule`, `Model.LandingStrutModule` | open / close (part menu) |
+
+A module of this list is what fires the transition. An engine, a tank or a plain
+structural part has none, so a transition on it never happens: a triggered motion
+there waits in its first pose forever. Use a `keys` curve **without** a trigger for
+a motion that should just run, or add the module that drives the state.
 
 The part editor has a form for this: add the **Part states** component, name the
 states and add the transitions (from, to and the trigger name). The trigger list of
@@ -362,6 +442,16 @@ rotators, so the visible mesh has to contain those nodes.
     "deployed": 90,
     "duration": 2,
     "trigger": "extend"
+  },
+  {
+    "path": "model/leg_piston",
+    "type": "deploy",
+    "translate": true,
+    "axis": [0, 1, 0],
+    "stowed": 0,
+    "deployed": 0.4,
+    "duration": 2,
+    "trigger": "deploy"
   }
 ]
 ```
@@ -372,6 +462,20 @@ rotators, so the visible mesh has to contain those nodes.
   from the `Model.PartStateModule` config) and moves back when the transition named
   in `foldTrigger` fires. Without a `foldTrigger` every other transition folds the
   node back. Without a trigger at all the node simply keeps the deployed pose.
+- `keys` is a curve of any shape: the `keys` array holds `{time, angle, smooth}`
+  points sampled over `duration` seconds (metres with `translate: true`). Without a
+  trigger the curve runs in a loop from the first frame. With a `trigger` it is a
+  one-shot motion instead: the trigger plays the curve once and the node holds the
+  last key, `foldTrigger` plays it back, and without a `foldTrigger` every other
+  transition plays it back. `trigger` and `foldTrigger` naming the same transition
+  is a toggle: one event plays the curve forward, the next one plays it back. A
+  trigger that is not in the `triggersData` of `Model.PartStateModule` never fires,
+  so the motion waits in its first pose (the editor's check section and the log of
+  the loader report it).
+- `translate: true` turns the motion into a sliding one: the node moves along
+  `axis` in metres instead of turning — `speed` in m/s, `stowed`/`deployed`/`keys`
+  in metres. A landing leg, a piston, a telescope: the node must be a separate
+  object of the mesh, exactly like for a rotation.
 - For the way back the part needs a second transition in its
   `Model.PartStateModule` (for example `deployed → folded` with the trigger
   `fold`) and something in the game that switches the state back (the antenna
@@ -606,6 +710,65 @@ without one; the editor writes it and the check section reports it.
 The editor writes the files: the section **Flame** has the parameters, an
 animated preview in the viewport and the field for the own mesh.
 
+### The effects of the RCS thrusters
+
+A part with `Model.RCSModule` can carry `Model.ContinuousEffectModule` too: the
+game plays it itself (`RCSModuleCtrl`) — the `vfx` (the game knows `rcs_0` and
+`rcs_1`, the two jets of the stock blocks) while the thruster fires and the
+`sound` as a loop. The module is created when its state entry exists; the loader
+adds an empty entry if it is missing. The same start/end-sound rules as for an
+engine apply.
+
+```json
+"modules": {
+  "Model.RCSModule": { "maxThrustAsl": 100, "maxThrustVac": 238, "monopropellant": { "type": "n2h4", "amount": 0.1 } },
+  "Model.RCSBlockModule": {},
+  "Model.ContinuousEffectModule": { "sound": "rcs_micro", "vfx": "rcs_0" }
+},
+"state": {
+  "Model.RCSModule": {},
+  "Model.RCSBlockModule": {},
+  "Model.ContinuousEffectModule": {}
+}
+```
+
+## The gimbal of an engine
+
+An engine can swing its nozzles, and the game does the swinging itself: it turns
+the nodes listed in `Model.EngineGimbalModule`. The list holds paths relative to
+the part root, and every path must name a node of the model (a separate object
+of the mesh), otherwise the game throws when the part is placed.
+
+```json
+"modules": {
+  "Model.EngineGimbalModule": {
+    "range": 3,
+    "combustionChambers": ["model/nozzle"]
+  }
+},
+"state": {
+  "Model.EngineGimbalModule": {}
+}
+```
+
+`range` is in degrees. While the engine runs, the game turns the node towards
+the gimbal command at `range * 2` degrees per second and returns it to its rest
+position when the engine stops. The flame is reparented onto the first chamber,
+so it follows the nozzle.
+
+The pivot of the nozzle is the origin of its object in the mesh: put the origin
+of the object at the hinge in Blender, otherwise the nozzle swings around the
+wrong point. The node has to be a separate object of the mesh (its own name in
+the OBJ): a part of a bigger object cannot be turned on its own.
+
+The loader checks every path against the built part, drops the paths that name
+no node (the game would throw) and removes the module when nothing is left; it
+also adds the `state` entry, without which the game never creates the module.
+
+The editor has the **Engine gimbal** component: the list is a picker of the
+nodes of the loaded mesh, and the check section reports a path that the mesh
+does not have.
+
 ## Settings
 
 An optional `PartAdder.json` next to the DLL changes the behaviour of the mod:
@@ -615,7 +778,8 @@ An optional `PartAdder.json` next to the DLL changes the behaviour of the mod:
   "verbose": false,
   "drawIcons": true,
   "checkDefindex": true,
-  "maxTextureSize": 2048
+  "maxTextureSize": 2048,
+  "autoReload": true
 }
 ```
 
@@ -625,14 +789,30 @@ An optional `PartAdder.json` next to the DLL changes the behaviour of the mod:
 | `drawIcons` | Draw the shop icon from the mesh when the part has no `icon` file. |
 | `checkDefindex` | Refuse parts whose defindex clashes with another part. |
 | `maxTextureSize` | Scale textures down when they are larger than this (0 disables it). |
+| `autoReload` | Build the parts again when a file of the `Parts` folder changes (the default). |
+
+### The parts without a restart
+
+The mod watches its `Parts` folder: when a file changes (a `part.json` that was
+written again, a new mesh, a new pack), the parts are built again within a
+second — the game does not have to be closed and opened. The old parts leave
+the cache of the game first, the new ones take their place; the defindex of a
+part does not change (it comes from the pack and the id), so the rockets that
+are already flying keep their parts. The shop has to be opened again to show
+the new parts, and `PartAdder.log` gets the lines of the reload under the ones
+of the first load.
+
+Switch it off with `"autoReload": false` in `PartAdder.json`.
 
 ## Validation and errors
 
 Loading is per part and per pack: one broken part does not stop the others. A part
 fails, with a message in `PartAdder.log`, when:
 
-- `part.json` is not valid JSON, `model` or `mass` is missing, `mass <= 0`;
+- `part.json` is not valid JSON, `model` is missing, `mass <= 0`;
 - `category` is missing or unknown, or `units` is unknown;
+- a field has the wrong type, a value is outside its range, or a field of the
+  schema does not fit (the schema is the one description of the format);
 - a required file is missing, or an optional texture is missing (warning only);
 - two parts in a pack share an `id`, or two parts share a `defindex`;
 - an attachment has a duplicate id, an id outside `0..65535`, an unknown shape or
@@ -641,7 +821,10 @@ fails, with a message in `PartAdder.log`, when:
 
 Warnings only: a variant with an unknown type is ignored, a `materials` entry that
 names a node that is not in the mesh does nothing, and a `reentryModel` that cannot
-be imported falls back to the generated shell.
+be imported falls back to the generated shell. A surface socket the game has no
+config for (or whose shapes are all unknown) is dropped and the rest of the part
+loads; the `dynamic` flag of a fixed connection is stripped; a `dynamicCurrPivot`
+outside the hull only produces a warning.
 
 ## Minimal example
 

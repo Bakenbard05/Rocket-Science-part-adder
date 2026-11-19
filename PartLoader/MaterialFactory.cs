@@ -292,6 +292,15 @@ namespace PartRotatorExtension.PartLoader
             return new Material(shader);
         }
 
+        /// <summary>A copy of the HDRP template material of the game. The template is
+        /// already loaded at start (the parts are built from it), so the shader of the
+        /// game is in memory even when Shader.Find cannot see it.</summary>
+        internal static Material CloneTemplate()
+        {
+            Material source = GetTemplate();
+            return source != null ? new Material(source) : null;
+        }
+
         private static Material GetTemplate()
         {
             if (templateSearched)

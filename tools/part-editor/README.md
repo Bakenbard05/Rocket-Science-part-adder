@@ -25,10 +25,14 @@ fixed widths.
 
 ## Workflow
 
-1. Fill in `Id`, `Name`, `Category`, `Mass` — or pick one of the built-in
-   examples (**Example** dropdown → **Load example**) to start from a working
-   structural block, battery, engine, command pod, decoupler, RCS block or solar
-   panel. The examples mirror `docs/EXAMPLES.md` and come with a 1 × 1 × 1 m cube
+1. Fill in `Id`, `Name`, `Category`, `Mass` — or press **New part**, which
+   creates the skeleton of the category that is chosen in the form: the modules,
+   the state and the connections that category needs (an engine gets its
+   thrust, its propellants and its flame, a tank its propellants, a command pod
+   its control module). Pick one of the built-in examples (**Example** dropdown →
+   **Load example**) to start from a working structural block, battery, engine,
+   command pod, decoupler, RCS block or solar panel. The examples mirror
+   `docs/EXAMPLES.md` and come with a 1 × 1 × 1 m cube
    (`assets/example-cube.obj`), which is loaded into the preview automatically as
    `model.obj` — replace it with your own mesh before shipping the part.
 2. Drop a mesh (`.obj`, `.glb`, `.gltf`, `.stl`, `.ply`, `.fbx`, `.dae`) onto the
@@ -38,6 +42,8 @@ fixed widths.
 3. **Add attachment**, choose a shape and place it with the gizmo. Click the
    attachment box or a socket sphere in the viewport to select it, then drag the
    arrows. **Snap 0.1 m** rounds the gizmo to decimetres.
+   **Fit to the mesh** puts the selected connection onto the far end of the mesh
+   along its direction and sizes it after the silhouette of the mesh there.
 4. Sockets are listed under the shape controls. Each one has a position in the
    attachment's local X/Z plane (metres before `spacing`); **Add socket** adds a
    custom one, `◎` selects it for gizmo dragging. Custom `size` and `center`
@@ -50,14 +56,73 @@ fixed widths.
    **Open part.json** loads an existing file, and dropping a `.json` onto the
    viewport does the same.
 
+**Undo** and **redo** (also Ctrl+Z and Ctrl+Y) walk through the changes of the
+part. The work of the session is kept as a draft in the browser, so a closed tab
+does not cost it; the draft of the last session comes back when the editor is
+opened again.
+
+**Mass from the mesh** computes the mass from the volume of the mesh and the
+chosen density. The same rule is in the loader: a part.json without a mass gets
+1000 kg/m³ from the volume of its mesh.
+
+## Dynamic sockets
+
+A dynamic socket is a connection the game makes on the surface of a part itself:
+the player drops a part onto the hull, and the game picks the point and the normal.
+One part receives the other on its surface, so a socket always comes in two ends —
+the receiving config on one part and the matching attaching config on the other.
+
+The **Dynamic sockets** section of the right panel lists the sockets of the part:
+
+- **Add socket** adds an entry with a stock config of the game. The dropdown groups
+  the configs by role: **Receives a part on the hull** (a positive defindex, another
+  part can be stuck to this one) and **Attaches to a hull** (a negative one, this
+  part can be stuck to another one). Only the configs the game itself registers are
+  offered; an id of an older file that the list does not know stays visible as its
+  own option, and **Check** warns about it.
+- The checkboxes are the shapes the socket takes. Several can be combined
+  (`single, dual`) and the game creates one socket for every shape; the socket only
+  connects to a fixed connection of another part with a compatible shape.
+- **Pivot on the hull** (`dynamicCurrPivot`) is the point the game aims at when this
+  part is placed on another one. It has to be inside the hull; **Pivot from mesh**
+  puts it at the centre of the mesh, and the loader warns when it is outside.
+- The `◎` button probes the hull: move the pointer over the mesh and a ghost socket
+  follows the surface, turned the way the game would turn it. It is green where the
+  restriction of the config allows the socket and red where it does not (a ring
+  config allows a band around its axis, a side config only its direction, a cap
+  config a cone). Nothing of the probe is exported.
+- The sockets are also drawn on the part, on the box the game actually probes: the
+  assembly collider of a mod part is a box over its mesh, so a socket can only sit
+  on one of its six faces. Every face the restriction allows is painted in the
+  colour of the row, a ring of the socket sits on each of them, and the pivot is
+  marked with an octahedron and the axes. The eye in the row and **Show the sockets
+  on the model** hide the layer; the drawing is not part of the export.
+
+The `dynamic` flag of a fixed attachment is not offered: the game removes such a
+connection when the part is detached, so the loader strips it and **Check** warns.
+
 The status bar mirrors the loader validation: missing id/mass/model, bad
 defindex, duplicate attachment ids, unknown flags/units, sockets on shapes that
 need them, material values outside 0..1. Warnings (for example identical socket
 positions, or a mesh that was not loaded for preview) do not block export.
 
+The **Check** button goes further: it runs the same rules the loader runs (the
+schema of `part.json` is the one description of the format, the editor reads the
+same file the loader has in the DLL) and looks at the mesh of the part — faces
+without area, numbers that are not numbers, meshes without normals or without
+texture coordinates are the things the importer of the game stumbles over.
+
 Attachment flags are picked with checkboxes but written to `part.json` as one
-comma-separated string (`"dynamic, primary"`), matching the loader and
+comma-separated string (`"primary, axial"`), matching the loader and
 `docs/part.schema.json`; the older array form is still accepted on import.
+
+The sections of the left panel are collapsible cards: the heading opens and
+closes a section, and the editor remembers which ones are open (`localStorage`
+key `partadder.editor.sections`), so a part with a lot of fields does not turn
+into one long wall. The motions of the part have their own bar under the
+viewport: **Play**/**Reset**, the time readout and the time slider, and the
+timeline of every motion. A second click on a track adds a key, dragging a key
+changes its time and angle, `▶` of a track previews that motion alone.
 
 ## Components
 
@@ -89,14 +154,61 @@ state change. The trigger list of the animations fills itself from these names.
 The **Animations** section moves model nodes without Unity's Animator, which the
 game cannot use for mod parts (an AnimatorController cannot be created at
 runtime). Load a mesh, pick one of its nodes in the dropdown and press **Add
-motion**:
+motion**.
 
-- **Rotation** (`spin`) turns the node around an axis with a speed in degrees per
-  second — wheels, spinning antennas, reaction gyros.
-- **Deploy** (`deploy`) moves the node between a stowed and a deployed angle over
-  a duration. It plays when the part fires the state transition named in **State
-  trigger** (the trigger names come from the `Model.PartStateModule` module) and
-  returns when another transition starts — the behaviour of the stock antennas.
+A motion is a **curve**: the horizontal axis is the time, the vertical one the
+angle of the node (or the distance in metres when the motion slides instead of
+turning). It works like the graph editor of Blender:
+
+- **drag a point** on the curve to move its key (the time and the value),
+- **click in the curve** to add a key (a click on the axes around it only
+  moves the playhead — a key from the margin would land outside the window),
+- **right click a point** to delete it (the Delete key does the same for the
+  selected key),
+- **drag in the header** of the graph to move the playhead,
+- the **space** plays the motion and stops it again.
+
+A key cannot be dragged out of the window: when the pointer goes past the top
+or the bottom edge, the axis of the value grows in round steps (15° for
+rotations, 0.25 m for slides — the view zooms out with the drag) and the point
+rides the edge. The value follows the pointer one to one in the scale of the
+moment of the grab, so the numbers cannot run away. The timeline behaves the
+same way, one lane per motion.
+
+Under the graph is the **dope sheet**: the points of the curve as a list, with
+the time and the value editable. The values in the list are the same as the
+points on the curve. Type into a field normally: it is applied while you type and
+the field is not rebuilt until you leave it (Enter or a click elsewhere), so
+decimals such as `0.05` are entered one character at a time. The value field takes
+hundredths of a metre (or of a degree), and `0.05` in a translation is 5 cm along
+the axis.
+
+The **type** of a motion only says what the curve means:
+
+- **Rotation** (`spin`) is a straight line — the slope of the line is the speed
+  in degrees per second. Drag the end of the line to change it: wheels, spinning
+  antennas, reaction gyros.
+- **Deploy** (`deploy`) is the move from the stowed pose to the deployed one.
+  Drag the two points to change the poses and the length of the motion. It
+  plays when the part fires the state transition named in **State trigger** (the
+  trigger names come from the `Model.PartStateModule` module) and returns when
+  another transition starts — the behaviour of the stock antennas.
+- **Keyframes** (`keys`) is the free curve: the points are the keys of the
+  motion and the curve repeats every **Duration** seconds.
+
+**Move instead of turn** (the checkbox on a motion) slides the node along the
+axis in metres instead of rotating it: the speed is m/s, the poses and the keys
+are metres — landing legs, pistons, telescopes. The node must be a separate
+object of the mesh, the same rule as for a rotation.
+
+**Pivot** (the vector field on a motion) moves the centre of the rotation: the
+node turns around that point instead of its own origin — a wheel on a short
+axle, a flap on the edge of a wing. The point is written in the space of the
+node; `0, 0, 0` turns the node around itself, as before. A pure offset of the
+node is the **Move instead of turn** checkbox.
+
+The graph window is resizable: drag the bar under it up or down (double click
+resets), the height is kept between the sessions.
 
 **Track node** does the opposite: it fills the `Model.RotationTrackingModule`
 module with the picked node, so the *game* turns it towards the tracked target
@@ -108,7 +220,10 @@ transform math as the runtime driver (`base rotation × angle around the axis`):
 **Play** runs the time, the slider scrubs it (0…10 s) and **Reset** returns to
 the stowed pose. The ▶ button of a single motion previews only that motion, so
 you can check one antenna or one hatch at a time. The preview needs the mesh to
-be loaded — the node names come from it.
+be loaded — the node names come from it. Loading another part or mesh starts the
+preview from the stowed pose; the **explode** slider spreads the view on top of
+the pose of the preview instead of replacing it, so the two never add an offset
+twice.
 
 ## Materials and textures
 
@@ -150,8 +265,9 @@ the amount follows the size of the mesh. The result is the `variants` array of
 
 **Stock parts** takes a game part apart: pick one of the 199 stock parts and press
 **Take apart**. Its category, mass, description, modules, state, variants (the fuel
-picker of a tank) and connection points (id, position, orientation, shape,
-sockets, flags, box size) become the current part, ready to be edited. The
+picker of a tank), the static connection points (id, position, orientation, shape,
+sockets, flags, box size) and the dynamic sockets (`dynamicAttachmentConfigs`,
+`dynamicCurrPivot`, `radialSnapping`) become the current part, ready to be edited. The
 orientation of the stock connections is a quaternion, it is converted to the Euler
 angles the editor uses. The stock mesh is not part of the editor, so add your own
 mesh to the folder.
@@ -188,6 +304,12 @@ of the engine and the throttle slider, so you can see whether the nozzle sticks 
 of the mesh. The sounds of the game live inside its asset bundles and cannot be
 played by a browser — the sound field takes a file of your own, and the throttle
 sets its volume.
+
+Loading a part puts the preview on the flame of its engine, so the author does not
+tune a flame the engine never uses: the first name of the list of
+`Model.EngineEffectsModule` that the editor can show wins — a saved flame is loaded
+with its own values, a stock name takes the values of that flame of the game, and a
+part without a flame list keeps the flame that is open (its `flame.json`).
 
 **Flame** section tunes the flame itself. The game never builds a flame from data:
 it takes a flame prefab of the engine, copies its material and drives the shader
@@ -228,6 +350,16 @@ mesh has triangles, the defindex, the modules are known to the game, the texture
 are in place, the variant types are known, the attachment ids are unique, the
 animations point at nodes that exist in the mesh and the flame prefabs are known.
 
+The **Resource separator** (`detachConnIds`) of a fairing or a jettison is checked
+too: the ids must be the attachments of this part, because the game reads them
+without a null check and repeats the decouple command every frame when one is
+missing (the log floods with `NullReferenceException` and the rocket is thrown
+away). The loader completes the set — it points a separator at the only
+attachment of the part, drops the ids the part does not have and removes the
+jettison of a part with several attachments and no valid id — and the check
+reports what it would do. A new separator starts at the attachment the part is
+mounted by (the bottom one, or its only one), not at a stock number.
+
 **Volume and fuel** measures the volume of the meshes the way the game bakes it and
 compares it with the fuel the part carries. The game bakes the volume of the union of
 the meshes and compares it with the contents of the fuel modules: every module adds
@@ -259,6 +391,17 @@ editor, picking a propellant scales the amounts down to the safe share of the vo
 (the status bar says when it had to), and **Check the part** reports every variant
 whose fuel reaches the volume.
 
+The second way a part breaks the temperature of the whole rocket is a **skin heavier
+than the part itself**: the game models the skin as a 2.5 mm metal sheet over the whole
+area (`skinDensity × 0.0025 × area`), and when that weighs more than the part, the
+internal heat mass goes negative and the temperature jobs of the game produce NaN as
+soon as the part has to exchange heat at time warp. The game clamps the skin density so
+the skin weighs 25 % of the mass (`ValidateAfterMerge`), and the loader repeats the
+clamp after the overrides — **Check the part** warns when it fires and says the density
+the flight will use. A large light fairing (23.9 m² of area at 111.6 kg) is the typical
+case; the forecast row already assumed the clamp, so its numbers were always the
+post-clamp ones.
+
 **Export gallery** writes the part from six angles (front, back, left, right, top,
 iso) into a zip with a `preview.png` for the Workshop page.
 
@@ -276,7 +419,11 @@ the mesh exported from the preview), the textures of every part and a
 `preview.png` for the Workshop page. The section **Parts of the pack** lists the
 current part and the parts of the library with checkboxes — tick the ones that
 belong into the pack and export them all at once. The preview image shows the part
-alone, without the markers of the editor.
+alone, without the markers of the editor. The mesh and the image are always taken
+from the **rest pose**: the animation preview and the exploded view are editor
+positions and are never written into the exported OBJ (an old export could bake a
+moved node into the mesh, and every later load of that file showed the part
+offset).
 
 ## Language
 
@@ -317,20 +464,28 @@ orientation again, because the game mirrors it once more.
 ```text
 index.html      layout and form
 app.js          three.js preview, gizmo, model loading, validation, JSON I/O
+schema.js       the schema of part.json (docs/part.schema.json) and its validator
+history.js      the undo history of the part
+templates.js    the skeletons of the new parts (one per category)
+anim-curve.js   the graph editor of a motion (the curve of the channel)
 flame.js        the parameters of the flame of the engine and its preview shader
 flame-presets.js  generated: the values of the stock flames of the game
 generate-flame-presets.py  regenerates flame-presets.js from the assets of the game
 examples.js     built-in part examples (mirrors docs/EXAMPLES.md)
 components.js   component registry: stock modules with typed fields (mirrors docs/MODULES.md)
 presets.js      socket layouts, categories, units, flags (mirrors AttachmentPresets.cs)
+dynamic-presets.js  generated: the stock dynamic attachment configs and the shapes
+generate-dynamic-presets.py  regenerates dynamic-presets.js from the assets of the game
 stock-parts.js  generated: the 199 stock parts, to take a game part apart
 i18n.js         English/Russian strings
 styles.css      dark theme
-serve.ps1       static file server
+serve.ps1       static file server (also serves /docs of the repository)
 generate-stock-parts.ps1  regenerates stock-parts.js from the game's AllParts.txt
 assets/         example-cube.obj, the 1 m preview mesh for the built-in examples
 vendor/three/   three.js r170 and the addons the editor imports
 ```
 
 `presets.js` is a copy of `PartLoader/AttachmentPresets.cs`; when a socket layout
-changes there, update both.
+changes there, update both. `dynamic-presets.js` is generated from the configs the
+game registers; `PartLoader/DynamicSockets.cs` checks the same ids and shapes on the
+mod side.

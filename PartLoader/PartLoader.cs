@@ -25,6 +25,27 @@ namespace PartRotatorExtension.PartLoader
 
         private const string ReentryMaterialName = "template_reentry";
 
+        /// <summary>
+        /// The module that rotates the nozzle of an engine: the game turns the
+        /// nodes listed in it (<see cref="ValidateGimbal"/>).
+        /// </summary>
+        private const string GimbalModule = "Model.EngineGimbalModule";
+
+        /// <summary>
+        /// The fairing and the jettison of the game read these modules without a
+        /// null check (<see cref="ValidateJettisonModules"/>).
+        /// </summary>
+        private const string FairingModuleName = "Model.PayloadFairingModule";
+        private const string JettisonModuleName = "Model.JettisonModule";
+        private const string SeparatorModuleName = "Model.ResourceSeparatorModule";
+        private const string PartStateModuleName = "Model.PartStateModule";
+
+
+    // The effects of the RCS thrusters: the game plays the vfx and the sound of
+    // this module itself (RCSModuleCtrl), the loader only has to make sure the
+    // module gets its entry in the state.
+    internal const string ContinuousEffectsModule = "Model.ContinuousEffectModule";
+
 
 
         private static Transform templatesRoot;
@@ -40,7 +61,34 @@ namespace PartRotatorExtension.PartLoader
         internal static int FailedParts { get; private set; }
         internal static int LoadedPacks { get; private set; }
 
+        /// <summary>
+        /// The parts the mod has built, so a reload can take them out of the cache of
+        /// the game before the new ones are built.
+        /// </summary>
+        private static readonly List<LoadedPart> loadedParts = new List<LoadedPart>();
+
+        private sealed class LoadedPart
+        {
+            internal int Defindex;
+            internal string PrefabKey;
+            internal string PrefabName;
+            internal string ModelKey;
+            internal string ReentryKey;
+            internal GameObject Prefab;
+            internal GameObject Model;
+            internal GameObject Reentry;
+        }
+
         internal static void LoadAll()
+        {
+            LoadAll(false);
+        }
+
+        /// <summary>
+        /// Builds the parts again. With <paramref name="appendLog"/> the log file keeps
+        /// what it had (the reload writes its lines under the old ones).
+        /// </summary>
+        internal static void LoadAll(bool appendLog)
         {
             string modDirectory;
             try
@@ -55,13 +103,14 @@ namespace PartRotatorExtension.PartLoader
             }
 
             string logPath = string.IsNullOrEmpty(modDirectory) ? null : Path.Combine(modDirectory, "PartAdder.log");
-            Diagnostics.Reset(logPath);
+            Diagnostics.Reset(logPath, appendLog);
 
             LoadedParts = 0;
             FailedParts = 0;
             LoadedPacks = 0;
 
-            Diagnostics.Info("PartAdder " + typeof(PartLoader).Assembly.GetName().Version + " starting");
+            Diagnostics.Info("PartAdder " + typeof(PartLoader).Assembly.GetName().Version +
+                             (appendLog ? " reloading the parts" : " starting"));
             Diagnostics.Info("Mod folder: " + modDirectory);
 
             ModSettings.Load(modDirectory);
@@ -128,7 +177,96 @@ namespace PartRotatorExtension.PartLoader
             }
 
             Diagnostics.Info("Loaded " + LoadedParts + " part(s) from " + LoadedPacks + " pack(s), " + FailedParts + " failure(s)");
-            Diagnostics.Flush(LoadedPacks, LoadedParts, FailedParts);
+            Diagnostics.Flush(LoadedPacks, LoadedParts, FailedParts, appendLog);
+        }
+
+        /// <summary>
+        /// Takes the parts of the mod out of the cache of the game, so they can be
+        /// built again (the reload of the live parts). The stock parts stay where
+        /// they are.
+        /// </summary>
+        internal static int UnloadParts(RocketPartCache cache)
+        {
+            if (cache == null)
+            {
+                return 0;
+            }
+
+            Dictionary<int, RocketPartSchema> schemas = CacheAccess.GetSchemas(cache);
+            Dictionary<int, GameObject> parts = CacheAccess.GetParts(cache);
+            Dictionary<int, PostprocessPartData> postprocess = CacheAccess.GetPostprocessData(cache);
+
+            int count = loadedParts.Count;
+            for (int i = 0; i < loadedParts.Count; i++)
+            {
+                LoadedPart loaded = loadedParts[i];
+                if (schemas != null)
+                {
+                    schemas.Remove(loaded.Defindex);
+                }
+
+                if (parts != null)
+                {
+                    parts.Remove(loaded.Defindex);
+                }
+
+                if (postprocess != null)
+                {
+                    postprocess.Remove(loaded.Defindex);
+                }
+
+                if (!string.IsNullOrEmpty(loaded.ModelKey))
+                {
+                    ModelAddressables.Unregister(loaded.ModelKey);
+                }
+
+                if (!string.IsNullOrEmpty(loaded.ReentryKey))
+                {
+                    ModelAddressables.Unregister(loaded.ReentryKey);
+                }
+
+                PartAnimationRegistry.Unregister(loaded.PrefabName);
+
+                if (loaded.Prefab != null)
+                {
+                    UnityEngine.Object.Destroy(loaded.Prefab);
+                }
+
+                if (loaded.Model != null)
+                {
+                    UnityEngine.Object.Destroy(loaded.Model);
+                }
+
+                if (loaded.Reentry != null)
+                {
+                    UnityEngine.Object.Destroy(loaded.Reentry);
+                }
+            }
+
+            loadedParts.Clear();
+            reentryShells.Clear();
+            return count;
+        }
+
+        /// <summary>
+        /// Builds the parts of the mod again: the old ones leave the cache of the game
+        /// first, so the new ones can take their place. The defindex of a part does
+        /// not change (it comes from the pack and the id), so the rockets that are
+        /// already flying keep their parts.
+        /// </summary>
+        internal static void ReloadAll()
+        {
+            RocketPartCache cache = CacheStore.Get<RocketPartCache>();
+            if (cache == null)
+            {
+                Diagnostics.Error("RocketPartCache is not available; the parts cannot be reloaded");
+                return;
+            }
+
+            int removed = UnloadParts(cache);
+            Diagnostics.Info("Reload: " + removed + " part(s) left the cache of the game");
+            LoadAll(true);
+            Diagnostics.Info("Reload: done, the shop has to be opened again to show the new parts");
         }
 
         private static RocketPartBaker CreateBaker(RocketPartCache cache)
@@ -277,7 +415,25 @@ namespace PartRotatorExtension.PartLoader
                 throw new InvalidOperationException("part.json is not valid JSON: " + e.Message, e);
             }
 
-            CheckUnknownKeys(raw, folderName);
+            // The schema of part.json is the one description of the format: the editor
+            // checks the same rules, so what the editor lets through is what the loader
+            // takes. The rules that need the game (the files of the part, the nodes of
+            // the mesh) are checked further down.
+            PartSchema.Result schemaResult = PartSchema.Validate(raw);
+            for (int i = 0; i < schemaResult.Warnings.Count; i++)
+            {
+                Diagnostics.Warn(folderName + ": " + schemaResult.Warnings[i]);
+            }
+
+            if (schemaResult.Errors.Count > 0)
+            {
+                for (int i = 0; i < schemaResult.Errors.Count; i++)
+                {
+                    Diagnostics.Warn(folderName + ": " + schemaResult.Errors[i]);
+                }
+
+                throw new InvalidOperationException(schemaResult.Errors[0]);
+            }
 
             var definition = JsonConvert.DeserializeObject<PartDefinition>(json);
             if (definition == null)
@@ -296,11 +452,6 @@ namespace PartRotatorExtension.PartLoader
             if (string.IsNullOrEmpty(definition.Model))
             {
                 throw new InvalidOperationException("'model' is required");
-            }
-
-            if (!definition.Mass.HasValue || definition.Mass.Value <= 0f)
-            {
-                throw new InvalidOperationException("'mass' must be a positive number");
             }
 
             string categoryError;
@@ -346,9 +497,19 @@ namespace PartRotatorExtension.PartLoader
             try
             {
                 material = MaterialFactory.Create(definition.Material, partDirectory, definition.Id);
+
+                // The dynamic sockets of the part: the defindexes are checked
+                // against the game's own table here, because the game reads them
+                // without a check later (see DynamicSockets.Prepare). A fixed
+                // connection with the "dynamic" flag is a trap and is fixed here
+                // as well, so this runs before the prefab is built.
+                DynamicSockets.Result sockets = DynamicSockets.Prepare(cache, definition, prefabKey);
+
                 BuiltPrefab built = PrefabBuilder.Build(definition, partDirectory, material, scale, prefabKey);
 
                 prefabRoot = built.Root;
+
+                DynamicSockets.CheckPivot(sockets, built.Bounds, prefabKey);
 
                 string iconName = IconFactory.Resolve(definition, partDirectory, pack.Id, category, cache, built.Model, material);
 
@@ -358,19 +519,45 @@ namespace PartRotatorExtension.PartLoader
                 // the names of the caches.
                 EngineEffects.Apply(definition, partDirectory, prefabKey);
 
-                RocketPartSchema schema = SchemaFactory.Create(definition, built, category, defindex, prefabKey, iconName);
+                // The gimbal of an engine rotates the nodes of its list, so every
+                // path has to name a node of the part: the game looks them up
+                // without a null check.
+                ValidateGimbal(definition, prefabRoot);
 
-                WarnAboutModulesWithoutState(definition);
+                // The fairing and the jettison read their modules and the
+                // connection ids without a null check, so the set has to be
+                // complete before the schema is built (<see
+                // cref="ValidateJettisonModules"/>). It runs before the state
+                // entries are filled, because it may add modules.
+                ValidateJettisonModules(definition);
+
+                FillMissingStateEntries(definition);
+
+                RocketPartSchema schema = SchemaFactory.Create(definition, built, category, defindex, prefabKey, iconName, sockets);
 
                 PostprocessPartData postprocessData = PartPostprocessor.Bake(schema, prefabRoot, baker);
+
+                // A part that does not name a mass gets one from the volume of its
+                // mesh: the author writes the numbers of the part, not the weight of
+                // the steel it is made of.
+                if (!definition.Mass.HasValue)
+                {
+                    schema.mass = MassFromVolume(postprocessData.volumeData.volume);
+                    Diagnostics.Info(prefabKey + ": no mass in part.json, it is computed from the volume: " +
+                                     JsonHelp.Invariant(postprocessData.volumeData.volume) + " m3 -> " +
+                                     JsonHelp.Invariant(schema.mass) + " kg");
+                }
+
                 schema = SchemaFactory.Finalize(schema, definition.Overrides);
 
-                AddAnimationDriver(prefabRoot, definition);
+                AddAnimationDriver(prefabRoot, definition, schema.prefabName);
 
                 // The game creates the modules of a part by walking its state, so
                 // the log of the loader can not tell whether the modules of the
                 // part exist in the game. The diagnostics write it in the flight.
-                if (definition.Modules != null && definition.Modules[EngineEffects.EffectsModule] != null)
+                if (definition.Modules != null &&
+                    (definition.Modules[EngineEffects.EffectsModule] != null ||
+                     definition.Modules[ContinuousEffectsModule] != null))
                 {
                     prefabRoot.AddComponent<PartDiagnostics>();
                 }
@@ -411,6 +598,18 @@ namespace PartRotatorExtension.PartLoader
                 Register(cache, schema, prefabRoot, postprocessData);
                 ParkTemplate(prefabRoot);
 
+                loadedParts.Add(new LoadedPart
+                {
+                    Defindex = defindex,
+                    PrefabKey = prefabKey,
+                    PrefabName = schema.prefabName,
+                    ModelKey = modelKey,
+                    ReentryKey = reentryKey,
+                    Prefab = prefabRoot,
+                    Model = modelTemplate,
+                    Reentry = reentryTemplate
+                });
+
                 Diagnostics.Info("[" + pack.Id + "/" + definition.Id + "] OK: " + built.MeshCount + " mesh(es), " +
                                  built.VertexCount + " vertices, " + built.AttachmentCount + " connection(s), mass " +
                                  JsonHelp.Invariant(schema.mass) + " kg");
@@ -450,6 +649,24 @@ namespace PartRotatorExtension.PartLoader
 
                 throw;
             }
+        }
+
+        /// <summary>
+        /// The mass of a part that does not name one: the volume of the baked mesh
+        /// times the density of a light structure (1000 kg/m3). The editor uses the
+        /// same rule, so a part that is measured there and written without a mass
+        /// gets the same number here.
+        /// </summary>
+        internal const float DefaultDensity = 1000f;
+
+        private static float MassFromVolume(float volume)
+        {
+            if (volume <= 0f || float.IsNaN(volume) || float.IsInfinity(volume))
+            {
+                return 1f;
+            }
+
+            return Mathf.Max(1f, Mathf.Round(volume * DefaultDensity));
         }
 
         private static void Register(RocketPartCache cache, RocketPartSchema schema, GameObject prefab, PostprocessPartData postprocessData)
@@ -1052,30 +1269,369 @@ namespace PartRotatorExtension.PartLoader
         /// in the state is never created, so the part behaves as if the module was
         /// not there at all.
         /// </summary>
-        private static void WarnAboutModulesWithoutState(PartDefinition definition)
+        /// <summary>
+        /// The gimbal of an engine turns the nodes listed in its module: the game
+        /// does <c>transform.Find(path)</c> and then reads
+        /// <c>chambers[i].localRotation</c> without a null check, so a path that
+        /// does not name a node makes the part throw. The paths are checked
+        /// against the built prefab here, the bad ones are dropped, and a gimbal
+        /// without a single node is removed (the nozzle then simply stays put).
+        /// </summary>
+        private static void ValidateGimbal(PartDefinition definition, GameObject prefabRoot)
         {
-            if (definition.Modules == null || definition.State == null)
+            JObject module = definition.Modules == null ? null : definition.Modules[GimbalModule] as JObject;
+            if (module == null || prefabRoot == null)
             {
                 return;
             }
 
-            var missing = new List<string>();
-            foreach (var property in definition.Modules.Properties())
+            var kept = new JArray();
+            var paths = module["combustionChambers"] as JArray;
+            if (paths != null)
             {
-                if (definition.State[property.Name] == null)
+                for (int i = 0; i < paths.Count; i++)
                 {
-                    missing.Add(property.Name);
+                    string path = paths[i].Value<string>();
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        continue;
+                    }
+
+                    if (prefabRoot.transform.Find(path) == null)
+                    {
+                        Diagnostics.Warn(definition.Id + ": the gimbal chamber '" + path +
+                                         "' is not a node of the part (the game would throw), it is dropped");
+                        continue;
+                    }
+
+                    kept.Add(path);
                 }
             }
 
-            if (missing.Count > 0)
+            if (kept.Count == 0)
             {
-                Diagnostics.Warn(definition.Id + ": module(s) without an entry in the state, the game will not create them: " +
-                                 string.Join(", ", missing));
+                definition.Modules.Remove(GimbalModule);
+                if (definition.State != null)
+                {
+                    definition.State.Remove(GimbalModule);
+                }
+
+                Diagnostics.Warn(definition.Id + ": the module " + GimbalModule +
+                                 " has no node to rotate, so it is removed (the nozzle will not move)");
+                return;
+            }
+
+            module["combustionChambers"] = kept;
+
+            // The game creates the modules of a part from its state, so the gimbal
+            // needs its entry there (an empty object, like the stock engines).
+            if (definition.State == null)
+            {
+                definition.State = new JObject();
+            }
+
+            if (definition.State[GimbalModule] == null)
+            {
+                definition.State[GimbalModule] = new JObject();
+            }
+
+            // The game turns the nozzle with (range * 2) degrees per second, and a
+            // range of zero keeps it still.
+            JToken range = module["range"];
+            float degrees = range != null && (range.Type == JTokenType.Integer || range.Type == JTokenType.Float)
+                ? range.Value<float>()
+                : 0f;
+            if (degrees <= 0f)
+            {
+                Diagnostics.Warn(definition.Id + ": the gimbal range is " + JsonHelp.Invariant(degrees) +
+                                 " degrees, the nozzle will not move");
+            }
+
+            var names = new List<string>();
+            for (int i = 0; i < kept.Count; i++)
+            {
+                names.Add(kept[i].Value<string>());
+            }
+
+            Diagnostics.Info(definition.Id + ": gimbal: range " + JsonHelp.Invariant(degrees) + " degrees, node(s) " +
+                             string.Join(", ", names.ToArray()));
+        }
+
+        /// <summary>
+        /// Fills every state entry the part.json forgot. The game creates the
+        /// modules of a part by walking its state (RocketPart.DeserializeConfig),
+        /// so a module of the config without an entry in the state is never
+        /// created; and the state is read straight into the module struct
+        /// without defaults, so an empty {} would make an engine limp
+        /// (thrustLimiter 0) and a tank empty (amount 0). The entries therefore
+        /// get the values the stock parts carry (ModuleStateDefaults, generated
+        /// from the 199 stock schemas), and "amount" is taken from the maxAmount
+        /// of the module config (the stock parts always carry a full tank).
+        /// The author does not have to write a state at all.
+        /// </summary>
+        private static void FillMissingStateEntries(PartDefinition definition)
+        {
+            if (definition.Modules == null)
+            {
+                return;
+            }
+
+            if (definition.State == null)
+            {
+                definition.State = new JObject();
+            }
+
+            var filled = new List<string>();
+            foreach (var property in definition.Modules.Properties())
+            {
+                if (definition.State[property.Name] != null)
+                {
+                    continue;
+                }
+
+                JObject state = ModuleStateDefaults.For(property.Name);
+                if (state == null)
+                {
+                    // A module the stock parts do not use: it still needs its
+                    // entry, but there are no stock values to copy.
+                    state = new JObject();
+                    Diagnostics.Warn(definition.Id + ": no default state is known for the module '" +
+                                     property.Name + "', an empty one was filled (the values of the " +
+                                     "module are the zero values now)");
+                }
+                else if (ModuleStateDefaults.WantsFullAmount(state))
+                {
+                    double maxAmount = definition.Modules[property.Name]?["maxAmount"]?.Value<double>() ?? 0.0;
+                    state["amount"] = maxAmount;
+                }
+
+                definition.State[property.Name] = state;
+                filled.Add(property.Name);
+            }
+
+            if (filled.Count > 0)
+            {
+                Diagnostics.Info(definition.Id + ": the state entries were filled automatically: " +
+                                 string.Join(", ", filled));
             }
         }
 
-        private static void AddAnimationDriver(GameObject prefabRoot, PartDefinition definition)
+        /// <summary>
+        /// The fairing and the jettison of the game only work as a set of modules,
+        /// and every piece of the set is read without a null check:
+        ///
+        /// * the simulation reads the part state of Model.PartStateModule
+        ///   (isActivated/isCoupled: partState.PartState), so a part without it
+        ///   throws every frame;
+        /// * the decouple walks the connections of Model.ResourceSeparatorModule
+        ///   (SpacecraftSplitter.Decouple, mode undock: part.GetModule
+        ///   &lt;ResourceSeparatorModule&gt;().detachConnIds), so a fairing without
+        ///   the separator throws at the jettison;
+        /// * PayloadFairingModule.ApplyForces then reads
+        ///   part.GetAttachment(resourceSeparator.detachConnId).Config, so an id
+        ///   the part does not have throws inside the decouple command.
+        ///
+        /// The last one is the worst: the exception escapes FlightCommandBuffer
+        /// .Execute before ClearAfterExecute, so the game repeats the decouple
+        /// command every frame (the log fills with NullReferenceException), and
+        /// every repeat rebases the vessel again — the rocket is thrown away.
+        /// The loader therefore completes the set where it can and drops the
+        /// jettison where it cannot: a part with a single attachment gets its
+        /// separator pointed at it, a part with several loses the ids it does
+        /// not have (and the fairing when none is left), and the stock state
+        /// module is added when the author forgot it.
+        /// </summary>
+        private static void ValidateJettisonModules(PartDefinition definition)
+        {
+            if (definition.Modules == null)
+            {
+                return;
+            }
+
+            bool hasFairing = definition.Modules.GetValue(FairingModuleName) != null;
+            bool hasJettison = definition.Modules.GetValue(JettisonModuleName) != null;
+            if (!hasFairing && !hasJettison)
+            {
+                // A separator on its own only splits the resource groups; the game
+                // reads its ids only when a fairing or a jettison decouples.
+                return;
+            }
+
+            var attachmentIds = new List<int>();
+            AttachmentDefinition[] attachments = definition.Attachments;
+            if (attachments != null)
+            {
+                for (int i = 0; i < attachments.Length; i++)
+                {
+                    // The prefab builder numbers an attachment without an id by
+                    // its place in the list (PrefabBuilder.BuildAttachments).
+                    int id = attachments[i].Id ?? i;
+                    if (!attachmentIds.Contains(id))
+                    {
+                        attachmentIds.Add(id);
+                    }
+                }
+            }
+
+            string available = attachmentIds.Count > 0
+                ? string.Join(", ", attachmentIds.ConvertAll(id => id.ToString()).ToArray())
+                : "none";
+
+            if (definition.Modules.GetValue(PartStateModuleName) == null)
+            {
+                definition.Modules[PartStateModuleName] = new JObject
+                {
+                    ["states"] = new JArray("coupled", "decoupled"),
+                    ["triggersData"] = new JArray(new JObject
+                    {
+                        ["transition"] = new JObject { ["x"] = 0, ["y"] = 1 },
+                        ["trigger"] = "decouple",
+                    }),
+                };
+                Diagnostics.Warn(definition.Id + ": the fairing/jettison has no Model.PartStateModule and the " +
+                                 "game reads its part state without a null check; the stock module was added " +
+                                 "(states [coupled, decoupled], the trigger 'decouple' for 0 -> 1)");
+            }
+
+            JObject separator = definition.Modules.GetValue(SeparatorModuleName) as JObject;
+            if (separator == null)
+            {
+                if (attachmentIds.Count == 1)
+                {
+                    definition.Modules[SeparatorModuleName] = new JObject
+                    {
+                        ["detachConnIds"] = new JArray(attachmentIds[0]),
+                    };
+                    Diagnostics.Warn(definition.Id + ": the fairing/jettison has no Model.ResourceSeparatorModule; " +
+                                     "the stock one was added and it breaks the only attachment of the part (" +
+                                     attachmentIds[0] + ")");
+                    return;
+                }
+
+                DropJettison(definition, available);
+                return;
+            }
+
+            var kept = new List<int>();
+            var dropped = new List<string>();
+            JArray detach = separator["detachConnIds"] as JArray;
+            if (detach != null)
+            {
+                for (int i = 0; i < detach.Count; i++)
+                {
+                    JToken token = detach[i];
+                    int id;
+                    try
+                    {
+                        id = token.Value<int>();
+                    }
+                    catch (Exception)
+                    {
+                        dropped.Add(token.ToString());
+                        continue;
+                    }
+
+                    if (!attachmentIds.Contains(id))
+                    {
+                        dropped.Add(id.ToString());
+                    }
+                    else if (!kept.Contains(id))
+                    {
+                        kept.Add(id);
+                    }
+                }
+            }
+
+            if (kept.Count == 0)
+            {
+                if (attachmentIds.Count == 1)
+                {
+                    separator["detachConnIds"] = new JArray(attachmentIds[0]);
+                    Diagnostics.Warn(definition.Id + ": the separator names no connection the part has (" +
+                                     (dropped.Count > 0 ? string.Join(", ", dropped.ToArray()) : "none") +
+                                     "); its only attachment " + attachmentIds[0] + " is used instead");
+                    return;
+                }
+
+                DropJettison(definition, available);
+                return;
+            }
+
+            if (dropped.Count > 0 || kept.Count != (detach?.Count ?? 0))
+            {
+                var array = new JArray();
+                for (int i = 0; i < kept.Count; i++)
+                {
+                    array.Add(kept[i]);
+                }
+
+                separator["detachConnIds"] = array;
+                Diagnostics.Warn(definition.Id + ": the separator names " + string.Join(", ", dropped.ToArray()) +
+                                 ", which the part does not have; it now breaks " +
+                                 string.Join(", ", kept.ConvertAll(id => id.ToString()).ToArray()) +
+                                 " (the attachments are: " + available + ")");
+            }
+        }
+
+        /// <summary>
+        /// Removes the jettison of a part that cannot work: without a connection
+        /// the separator may break, the game throws inside the decouple command
+        /// (<see cref="ValidateJettisonModules"/>), and the exception repeats
+        /// every frame. The part then flies as a plain part and nothing throws.
+        /// </summary>
+        private static void DropJettison(PartDefinition definition, string available)
+        {
+            bool removed = definition.Modules.Remove(FairingModuleName);
+            removed |= definition.Modules.Remove(JettisonModuleName);
+            if (definition.State != null)
+            {
+                definition.State.Remove(FairingModuleName);
+                definition.State.Remove(JettisonModuleName);
+            }
+
+            if (removed)
+            {
+                Diagnostics.Warn(definition.Id + ": the fairing/jettison was removed: Model.ResourceSeparatorModule " +
+                                 "needs \"detachConnIds\" naming the attachments it breaks, and this part has: " +
+                                 available + ". The part loads without the jettison instead of throwing in the game");
+            }
+        }
+
+        /// <summary>
+        /// The driver reacts to the trigger names of the part state, and the game only
+        /// announces the transitions listed in the Model.PartStateModule config. A name
+        /// that is not there never fires, so the motion stays in its first pose — the
+        /// usual reason a mod part "does not animate at all".
+        /// </summary>
+        private static void WarnAboutUnknownTrigger(PartDefinition definition, int index, string trigger)
+        {
+            JObject module = definition.Modules == null ? null : definition.Modules[PartStateModuleName] as JObject;
+            if (module == null)
+            {
+                Diagnostics.Warn(definition.Id + ": animation #" + (index + 1) + ": the part has no " +
+                                 PartStateModuleName + ", so no transition ever fires '" + trigger +
+                                 "' and the motion does not play");
+                return;
+            }
+
+            if (module["triggersData"] is JArray transitions)
+            {
+                for (int t = 0; t < transitions.Count; t++)
+                {
+                    if (transitions[t] is JObject item &&
+                        string.Equals((string)item["trigger"], trigger, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            Diagnostics.Warn(definition.Id + ": animation #" + (index + 1) + ": no transition of " +
+                             PartStateModuleName + " is named '" + trigger +
+                             "', so the motion never plays; add it to \"triggersData\"");
+        }
+
+        private static void AddAnimationDriver(GameObject prefabRoot, PartDefinition definition, string prefabName)
         {
             if (definition.Animations == null || definition.Animations.Length == 0)
             {
@@ -1098,10 +1654,27 @@ namespace PartRotatorExtension.PartLoader
                                                         "' (use spin, deploy or keys)");
                 }
 
+                if (!string.IsNullOrEmpty(animation.Trigger))
+                {
+                    WarnAboutUnknownTrigger(definition, i, animation.Trigger);
+                }
+
+                if (!string.IsNullOrEmpty(animation.FoldTrigger) &&
+                    !string.Equals(animation.FoldTrigger, animation.Trigger, StringComparison.OrdinalIgnoreCase))
+                {
+                    WarnAboutUnknownTrigger(definition, i, animation.FoldTrigger);
+                }
+
                 Vector3 axis;
                 if (!JsonHelp.TryVector3(animation.Axis, out axis) || axis.sqrMagnitude < 0.0001f)
                 {
                     axis = Vector3.up;
+                }
+
+                Vector3 pivot;
+                if (!JsonHelp.TryVector3(animation.Pivot, out pivot))
+                {
+                    pivot = Vector3.zero;
                 }
 
                 var keys = new List<AnimationKey>();
@@ -1137,33 +1710,68 @@ namespace PartRotatorExtension.PartLoader
                     duration = animation.Duration ?? 1f,
                     trigger = animation.Trigger,
                     foldTrigger = animation.FoldTrigger,
+                    translate = animation.Translate ?? false,
+                    pivot = pivot,
                     keys = keys.ToArray()
                 });
             }
 
+            for (int i = 0; i < entries.Count; i++)
+            {
+                PartAnimationEntry entry = entries[i];
+                // The model is still a child of the prefab here (it is detached for
+                // Addressables right after this), so the path can be checked against
+                // the built part: a typo would otherwise only show up as a part that
+                // does not move in the game.
+                if (prefabRoot.transform.Find(entry.path) == null)
+                {
+                    Diagnostics.Warn(definition.Id + ": animation #" + (i + 1) + ": the part has no node '" +
+                                     entry.path + "', so the motion will do nothing");
+                }
+
+                WarnAboutAnimationNodeConflict(definition, i, entry.path);
+            }
+
             PartAnimationDriver driver = prefabRoot.AddComponent<PartAnimationDriver>();
             driver.Configure(entries);
+
+            // The component a mod part is built from is created at runtime, and the
+            // clones of such a prefab can come up with an empty serialized list (the
+            // loader had read the animations, the part still did not move), so the
+            // definitions are kept under the prefab name and the driver takes them
+            // from there when its own list is empty.
+            PartAnimationRegistry.Register(prefabName, entries);
             Diagnostics.Info(definition.Id + ": " + entries.Count + " animation(s)");
         }
 
-        private static void CheckUnknownKeys(JObject raw, string partId)
+        /// <summary>
+        /// The gimbal of an engine and a motion can name the same node. The animation is
+        /// applied in LateUpdate, after the controllers of the game, so it wins and the
+        /// nozzle stops turning with the thrust vector: the author has to pick one.
+        /// </summary>
+        private static void WarnAboutAnimationNodeConflict(PartDefinition definition, int index, string path)
         {
-            foreach (JProperty property in raw.Properties())
+            JObject module = definition.Modules == null ? null : definition.Modules[GimbalModule] as JObject;
+            JArray chambers = module == null ? null : module["combustionChambers"] as JArray;
+            if (chambers == null)
             {
-                if (!KnownKeys.Contains(property.Name))
+                return;
+            }
+
+            for (int i = 0; i < chambers.Count; i++)
+            {
+                string chamber = (chambers[i].Value<string>() ?? string.Empty).Trim();
+                if (string.Equals(chamber, path, StringComparison.OrdinalIgnoreCase))
                 {
-                    Diagnostics.Warn(partId + ": unknown field '" + property.Name + "' in part.json (ignored)");
+                    Diagnostics.Warn(definition.Id + ": animation #" + (index + 1) + " turns '" + path +
+                                     "', the same node the gimbal rotates: the animation is applied last (LateUpdate), " +
+                                     "so the thrust vector of the engine is not visible; remove the gimbal or point " +
+                                     "the motion at another node");
+                    return;
                 }
             }
         }
 
-        private static readonly HashSet<string> KnownKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "formatVersion", "id", "name", "description", "category", "mass", "tags", "impactTolerance",
-            "assemblyPosition", "defindex", "model", "units", "scale", "physicsModel", "reentryModel", "icon",
-            "material", "attachments", "cableAttachments", "centerOfMassAdjustment", "radialSnapping", "modules",
-            "state", "thermo", "overrides", "animations", "materials", "variants", "$schema"
-        };
     }
 
     internal static class DefindexAllocator

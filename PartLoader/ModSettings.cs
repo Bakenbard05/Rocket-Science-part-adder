@@ -10,7 +10,8 @@ namespace PartRotatorExtension.PartLoader
     ///   "verbose": false,        // more messages in PartAdder.log
     ///   "drawIcons": true,       // draw a shop icon from the model when no icon file is given
     ///   "checkDefindex": true,   // refuse defindexes that clash with another part
-    ///   "maxTextureSize": 2048   // textures larger than this are scaled down
+    ///   "maxTextureSize": 2048,  // textures larger than this are scaled down
+    ///   "autoReload": true       // build the parts again when a file of "Parts" changes
     /// }
     /// </summary>
     internal static class ModSettings
@@ -22,12 +23,16 @@ namespace PartRotatorExtension.PartLoader
         internal static bool CheckDefindex { get; private set; }
         internal static int MaxTextureSize { get; private set; }
 
+        /// <summary>Build the parts again when a file of the parts folder changes.</summary>
+        internal static bool AutoReload { get; private set; }
+
         internal static void Load(string modDirectory)
         {
             Verbose = false;
             DrawIcons = true;
             CheckDefindex = true;
             MaxTextureSize = 2048;
+            AutoReload = true;
 
             if (string.IsNullOrEmpty(modDirectory))
             {
@@ -51,6 +56,8 @@ namespace PartRotatorExtension.PartLoader
                 {
                     MaxTextureSize = 64;
                 }
+
+                AutoReload = json["autoReload"]?.ToObject<bool>() ?? AutoReload;
 
                 Diagnostics.Info("Settings loaded from " + FileName);
             }

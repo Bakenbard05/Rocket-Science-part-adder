@@ -76,9 +76,12 @@ export const EXAMPLES = [
           forcePoint: { x: 0, y: -0.5, z: 0 },
         },
         'Model.EngineGenerator': { charge: 22000 },
+        'Model.EngineEffectsModule': { flames: ['engine_0_flame'] },
       },
       state: {
         'Model.EngineModule': { thrustLimiter: 1 },
+        'Model.EngineGenerator': {},
+        'Model.EngineEffectsModule': {},
       },
     },
   },

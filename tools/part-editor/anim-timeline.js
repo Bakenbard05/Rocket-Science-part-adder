@@ -6,10 +6,11 @@
 // of the node over the time, the same way the runtime driver reads them
 // (PartAnimationDriver.SampleKeys).
 import { t } from './i18n.js';
+import { motionDuration, motionPoints, sampleMotion } from './anim-curve.js';
 
-const HEADER_WIDTH = 156;
+const HEADER_WIDTH = 172;
 const RULER_HEIGHT = 22;
-const TRACK_HEIGHT = 40;
+const TRACK_HEIGHT = 46;
 const MIN_DURATION = 2;
 const MARGIN = 10;
 
@@ -60,32 +61,27 @@ export function createTimeline(root, options) {
     }
 
     let biggest = 1;
-    if (animation.type === 'keys' && Array.isArray(animation.keys)) {
-      for (const key of animation.keys) biggest = Math.max(biggest, Math.abs(Number(key.angle) || 0));
-      biggest = Math.max(15, Math.ceil(biggest / 15) * 15);
-    } else if (animation.type === 'deploy') {
-      biggest = Math.max(Math.abs(Number(animation.stowed) || 0), Math.abs(Number(animation.deployed) || 0), 1);
-    } else {
-      biggest = Math.max(1, Math.abs(Number(animation.speed) || 0) * duration());
-    }
-    return biggest;
+    for (const point of motionPoints(animation)) biggest = Math.max(biggest, Math.abs(point.value));
+    return Math.max(15, Math.ceil(biggest / 15) * 15);
   }
 
-  function angleToY(animation, angle, index) {
-    const top = 6;
+  function angleToY(animation, angle, index, top) {
+    const topPad = 6;
     const bottom = TRACK_HEIGHT - 6;
     const range = trackRange(animation, index);
-    // 0 degrees sits in the middle, the positive angles go up.
-    const middle = (top + bottom) / 2;
-    return middle - (angle / range) * ((bottom - top) / 2);
+    // 0 degrees sits in the middle of the lane, the positive angles go up.
+    // The y is absolute: the lane of the track begins at "top", and without
+    // the offset the curve of every track would land in the first lane.
+    const middle = top + (topPad + bottom) / 2;
+    return middle - (angle / range) * ((bottom - topPad) / 2);
   }
 
-  function yToAngle(animation, y, range) {
-    const top = 6;
+  function yToAngle(animation, y, range, top) {
+    const topPad = 6;
     const bottom = TRACK_HEIGHT - 6;
     const scale = range || trackRange(animation);
-    const middle = (top + bottom) / 2;
-    return ((middle - y) / ((bottom - top) / 2)) * scale;
+    const middle = top + (topPad + bottom) / 2;
+    return ((middle - y) / ((bottom - topPad) / 2)) * scale;
   }
 
   function element(name, attributes) {
@@ -133,35 +129,36 @@ export function createTimeline(root, options) {
     const top = RULER_HEIGHT + index * TRACK_HEIGHT;
 
     const selected = options.selectedIndex() === index;
+    const rowClass = selected ? 'tl-row tl-row-selected' : (index % 2 ? 'tl-row tl-row-odd' : 'tl-row');
     group.append(element('rect', {
       x: 0, y: top, width, height: TRACK_HEIGHT,
-      class: selected ? 'tl-row tl-row-selected' : 'tl-row',
+      class: rowClass,
     }));
 
-    // the header: the name of the motion and the buttons
+    // the header: the type of the motion, the name of the node and the buttons
     const header = element('g', { class: 'tl-header' });
-    const badge = element('text', { x: 8, y: top + 15, class: 'tl-badge' });
+    const badge = element('text', { x: 8, y: top + 14, class: 'tl-badge' });
     badge.textContent = typeLabel(animation.type);
     header.append(badge);
 
-    const name = element('text', { x: 34, y: top + 15, class: 'tl-name' });
+    const name = element('text', { x: 8, y: top + 31, class: 'tl-name' });
     name.textContent = shortPath(animation.path);
     header.append(name);
 
     const solo = element('rect', {
-      x: HEADER_WIDTH - 42, y: top + 6, width: 16, height: 16, class: 'tl-button', rx: 3,
+      x: HEADER_WIDTH - 46, y: top + 8, width: 18, height: 18, class: 'tl-button', rx: 4,
     });
     solo.addEventListener('pointerdown', (event) => {
       event.stopPropagation();
       options.onSolo(index);
     });
     header.append(solo);
-    const soloMark = element('text', { x: HEADER_WIDTH - 38, y: top + 19, class: 'tl-button-mark' });
+    const soloMark = element('text', { x: HEADER_WIDTH - 41, y: top + 21, class: 'tl-button-mark' });
     soloMark.textContent = options.soloIndex() === index ? '■' : '▶';
     header.append(soloMark);
 
     const remove = element('rect', {
-      x: HEADER_WIDTH - 20, y: top + 6, width: 16, height: 16, class: 'tl-button', rx: 3,
+      x: HEADER_WIDTH - 24, y: top + 8, width: 18, height: 18, class: 'tl-button', rx: 4,
     });
     remove.addEventListener('pointerdown', (event) => {
       event.stopPropagation();
@@ -181,100 +178,61 @@ export function createTimeline(root, options) {
     lane.addEventListener('pointerdown', (event) => onLanePointerDown(event, animation, index, top));
     group.append(lane);
 
-    if (animation.type === 'keys') {
-      group.append(renderKeys(animation, index, top));
-    } else if (animation.type === 'deploy') {
-      group.append(renderDeploy(animation, top));
-    } else {
-      group.append(renderSpin(animation, top));
-    }
+    // The curve of the motion and the points on it. The curve is the same as in
+    // the graph editor (anim-curve.js), so both show the same thing.
+    group.append(renderCurve(animation, index, top));
 
     return group;
   }
 
-  // The spin: the angle grows with the speed.
-  function renderSpin(animation, top) {
+  // The curve of a motion: the value of the channel over the time, with the
+  // points (the keyframes) on it.
+  function renderCurve(animation, index, top) {
     const group = element('g', {});
-    const speed = Number(animation.speed) || 0;
-    const range = trackRange(animation);
-    const y0 = angleToY(animation, 0);
-    const y1 = angleToY(animation, speed * duration());
-    group.append(element('path', {
-      d: `M ${timeToX(0)} ${y0} L ${timeToX(duration())} ${y1}`,
-      class: 'tl-curve',
-    }));
-    group.append(element('circle', {
-      cx: timeToX(0), cy: y0, r: 3, class: 'tl-dot',
-    }));
-    return group;
-  }
-
-  // The deploy: the pose change over the duration of the motion.
-  function renderDeploy(animation, top) {
-    const group = element('g', {});
-    const seconds = Math.min(duration(), Number(animation.duration) || duration());
-    const stowed = Number(animation.stowed) || 0;
-    const deployed = Number(animation.deployed) || 0;
+    const seconds = Math.min(duration(), motionDuration(animation));
     const points = [];
     for (let i = 0; i <= 24; i++) {
-      const t = i / 24;
-      const smooth = t * t * (3 - 2 * t);
-      const angle = stowed + (deployed - stowed) * smooth;
-      points.push(`${timeToX(t * seconds)} ${angleToY(animation, angle)}`);
-    }
-    group.append(element('path', { d: `M ${points.join(' L ')}`, class: 'tl-curve' }));
-    group.append(element('circle', {
-      cx: timeToX(0), cy: angleToY(animation, stowed), r: 3, class: 'tl-dot',
-    }));
-    group.append(element('circle', {
-      cx: timeToX(seconds), cy: angleToY(animation, deployed), r: 3, class: 'tl-dot',
-    }));
-    return group;
-  }
-
-  // The keys: the curve through the keyframes and the dots of the keys.
-  function renderKeys(animation, index, top) {
-    const group = element('g', {});
-    const keys = Array.isArray(animation.keys) ? animation.keys : [];
-    if (!keys.length) {
-      const hint = element('text', { x: timeToX(0) + 6, y: top + 24, class: 'tl-hint' });
-      hint.textContent = t('anim.noKeys');
-      group.append(hint);
-      return group;
-    }
-
-    const seconds = Math.min(duration(), Number(animation.duration) || duration());
-    const points = [];
-    for (const key of keys) {
-      const time = Math.min(Number(key.time) || 0, seconds);
-      points.push(`${timeToX(time)} ${angleToY(animation, Number(key.angle) || 0, index)}`);
+      const time = (i / 24) * seconds;
+      points.push(`${timeToX(time)} ${angleToY(animation, sampleMotion(animation, time), index, top)}`);
     }
     group.append(element('path', { d: `M ${points.join(' L ')}`, class: 'tl-curve' }));
 
-    keys.forEach((key, keyIndex) => {
-      const time = Math.min(Number(key.time) || 0, seconds);
+    motionPoints(animation).forEach((point) => {
+      const time = Math.min(Number(point.time) || 0, seconds);
+      const value = Number(point.value) || 0;
+      const selectedKey = options.selectedKey()?.track === index && options.selectedKey()?.key === point.index;
       const dot = element('circle', {
         cx: timeToX(time),
-        cy: angleToY(animation, Number(key.angle) || 0, index),
-        r: options.selectedKey()?.track === index && options.selectedKey()?.key === keyIndex ? 5 : 4,
-        class: 'tl-dot tl-key',
+        cy: angleToY(animation, value, index, top),
+        r: selectedKey ? 6 : 5,
+        class: point.index >= 0 ? 'tl-dot tl-key' : 'tl-dot',
       });
-      dot.addEventListener('pointerdown', (event) => {
-        event.stopPropagation();
-        options.onSelectKey(index, keyIndex);
-        // The range of the track and the angle of the key are kept while the
-        // key is dragged: the key follows the mouse and the angle does not run
-        // away.
-        dragging = {
-          kind: 'key',
-          track: index,
-          key: keyIndex,
-          range: trackRange(animation, index),
-          startAngle: Number(key.angle) || 0,
-          startY: event.clientY,
-        };
-        try { svg.setPointerCapture(event.pointerId); } catch (e) { /* no capture, the drag still works */ }
-      });
+      const tip = element('title', {});
+      // A translation motion works in metres, a rotation in degrees.
+      tip.textContent = `${time.toFixed(2)} s, ${value}${animation.translate ? ' m' : '°'}`;
+      dot.append(tip);
+      if (point.index >= 0) {
+        dot.addEventListener('pointerdown', (event) => {
+          event.stopPropagation();
+          options.onSelectKey(index, point.index);
+          // The range of the track and the angle of the key are kept while the
+          // key is dragged: the key follows the mouse and the angle does not run
+          // away.
+          dragging = {
+            kind: 'key',
+            track: index,
+            key: point.index,
+            range: trackRange(animation, index),
+            startAngle: Number(point.value) || 0,
+            startY: event.clientY,
+          };
+          // The angle follows the pointer one to one in the scale of the
+          // moment of the grab: mapping every move through the live range
+          // again would feed itself once the range grows (see pointermove).
+          dragging.unitsPerPixel = dragging.range / ((TRACK_HEIGHT - 12) / 2);
+          try { svg.setPointerCapture(event.pointerId); } catch (e) { /* no capture, the drag still works */ }
+        });
+      }
       group.append(dot);
     });
 
@@ -284,7 +242,7 @@ export function createTimeline(root, options) {
   function onLanePointerDown(event, animation, index, top) {
     const rect = svg.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top - top;
+    const y = event.clientY - rect.top;
 
     if (animation.type === 'keys') {
       // A second click right after the first one adds a key. The event of the
@@ -293,7 +251,9 @@ export function createTimeline(root, options) {
       const now = Date.now();
       if (now - lastClick < 400 && Math.abs(x - lastClickX) < 16) {
         lastClick = 0;
-        options.onAddKey(index, xToTime(x), yToAngle(animation, y, trackRange(animation, index)));
+        const range = trackRange(animation, index);
+        const angle = Math.max(-range, Math.min(range, yToAngle(animation, y, range, top)));
+        options.onAddKey(index, xToTime(x), angle);
         return;
       }
 
@@ -304,7 +264,7 @@ export function createTimeline(root, options) {
       for (let i = 0; i < keys.length; i++) {
         const time = Math.min(Number(keys[i].time) || 0, duration());
         const dx = x - timeToX(time);
-        const dy = y - angleToY(animation, Number(keys[i].angle) || 0, index);
+        const dy = y - angleToY(animation, Number(keys[i].angle) || 0, index, top);
         if (dx * dx + dy * dy < 64) {
           options.onSelectKey(index, i);
           dragging = {
@@ -315,6 +275,8 @@ export function createTimeline(root, options) {
             startAngle: Number(keys[i].angle) || 0,
             startY: event.clientY,
           };
+          // The same frozen scale as the dot of the curve above.
+          dragging.unitsPerPixel = dragging.range / ((TRACK_HEIGHT - 12) / 2);
           svg.setPointerCapture?.(event.pointerId);
           return;
         }
@@ -344,10 +306,16 @@ export function createTimeline(root, options) {
       const seconds = Math.min(duration(), Number(animation.duration) || duration());
       key.time = Math.max(0, Math.min(seconds, xToTime(x)));
 
-      // The angle follows the mouse with the scale of the track as it was when
-      // the drag began.
-      const scale = (TRACK_HEIGHT - 12) / 2;
-      const angle = dragging.startAngle + ((dragging.startY - event.clientY) / scale) * dragging.range;
+      // The angle follows the pointer one to one (the scale of the moment of
+      // the grab), and the keyframe stays inside its lane: past the edge the
+      // range of the track grows in round steps (the same way the graph
+      // editor zooms), so the key never leaves the track and the numbers
+      // cannot run away.
+      let angle = dragging.startAngle + (dragging.startY - event.clientY) * dragging.unitsPerPixel;
+      if (Math.abs(angle) > dragging.range) {
+        dragging.range = Math.ceil((Math.abs(angle) - dragging.range) / 15) * 15 + dragging.range;
+      }
+      angle = Math.max(-dragging.range, Math.min(dragging.range, angle));
       key.angle = Math.round(angle * 10) / 10;
       options.onChange();
       render();
@@ -392,5 +360,7 @@ function typeLabel(type) {
 function shortPath(path) {
   const value = String(path || '');
   const parts = value.split('/');
-  return parts[parts.length - 1] || value || '?';
+  const name = parts[parts.length - 1] || value || '?';
+  // The header of a track is narrow: a long name is cut with an ellipsis.
+  return name.length > 16 ? name.slice(0, 15) + '…' : name;
 }

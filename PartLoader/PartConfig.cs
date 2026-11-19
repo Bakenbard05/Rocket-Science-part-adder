@@ -44,6 +44,14 @@ namespace PartRotatorExtension.PartLoader
         [JsonProperty("centerOfMassAdjustment")] public JToken CenterOfMassAdjustment;
         [JsonProperty("radialSnapping")] public float? RadialSnapping;
 
+        /// <summary>
+        /// Surface sockets of the part, see docs/PART_FORMAT.md: a defindex of the
+        /// game's own dynamic attachment configs plus the shapes the socket takes.
+        /// </summary>
+        [JsonProperty("dynamicAttachmentConfigs")] public DynamicAttachmentDefinition[] DynamicAttachmentConfigs;
+        /// <summary>Point of the mesh the dynamic sockets of this part are aimed at.</summary>
+        [JsonProperty("dynamicCurrPivot")] public JToken DynamicCurrPivot;
+
         [JsonProperty("modules")] public JObject Modules;
         [JsonProperty("state")] public JObject State;
         [JsonProperty("thermo")] public JToken Thermo;
@@ -62,6 +70,18 @@ namespace PartRotatorExtension.PartLoader
         [JsonProperty("variants")] public JToken[] Variants;
     }
 
+    /// <summary>
+    /// One kind of surface socket ("dynamicAttachmentConfigs" in part.json). The
+    /// defindex names a config of the game; its sign says whether the part
+    /// receives another part on its surface or is put onto a surface itself.
+    /// </summary>
+    internal sealed class DynamicAttachmentDefinition
+    {
+        [JsonProperty("defindex")] public int Defindex;
+        /// <summary>Comma separated connection shapes, for example "single, dual".</summary>
+        [JsonProperty("shape")] public string Shape;
+    }
+
     /// <summary>One procedural motion of a model node ("animations" in part.json).</summary>
     internal sealed class AnimationDefinition
     {
@@ -77,6 +97,13 @@ namespace PartRotatorExtension.PartLoader
         [JsonProperty("foldTrigger")] public string FoldTrigger;
         /// <summary>Keyframes of the motion ("keys"), see PartAnimationDriver.</summary>
         [JsonProperty("keys")] public AnimationKeyDefinition[] Keys;
+        /// <summary>
+        /// The motion moves the node along the axis instead of turning it: the
+        /// numbers mean metres of offset (speed m/s, stowed/deployed/keys m).
+        /// </summary>
+        [JsonProperty("translate")] public bool? Translate;
+        /// <summary>The point the node turns around, in the space of the node.</summary>
+        [JsonProperty("pivot")] public JToken Pivot;
     }
 
     /// <summary>

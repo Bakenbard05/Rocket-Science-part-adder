@@ -57,6 +57,25 @@ namespace PartRotatorExtension.PartLoader
                 }
             }
 
+            // The effects of the RCS thrusters: the module of the config without
+            // an entry in the state is never created, and a vfx name the game
+            // does not know stays invisible. The module of an engine is an
+            // EngineEffectsModule (its subclass), so engines are not reported here.
+            ContinuousEffectModule continuous = effects != null
+                ? null
+                : ctrl.part.GetModule<ContinuousEffectModule>();
+            if (continuous != null)
+            {
+                text.Append(" | rcs: vfx=").Append(continuous.Vfx ?? "-");
+                if (!string.IsNullOrEmpty(continuous.Vfx))
+                {
+                    bool? known = CacheAccess.HasVfx(continuous.Vfx);
+                    text.Append(known == true ? " found" : known == false ? " MISSING" : " ?");
+                }
+
+                text.Append(" sound=").Append(continuous.Sound ?? "-");
+            }
+
             Debug.Log(text.ToString());
         }
     }

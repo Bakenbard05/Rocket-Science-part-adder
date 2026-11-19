@@ -35,7 +35,8 @@ namespace PartRotatorExtension.PartLoader
             PartCategory category,
             int defindex,
             string prefabName,
-            string iconName)
+            string iconName,
+            DynamicSockets.Result dynamicSockets)
         {
             var connections = new PartConnectionConfig[built.Connections.Count];
             for (int i = 0; i < built.Connections.Count; i++)
@@ -81,9 +82,15 @@ namespace PartRotatorExtension.PartLoader
                 assemblyPosition = definition.AssemblyPosition ?? 0,
                 prefabName = prefabName + ".prefab",
                 iconName = iconName ?? string.Empty,
-                radialSnapping = definition.RadialSnapping ?? 0f,
+                radialSnapping = definition.RadialSnapping ?? -1f,
                 centerOfMassAdjustment = new float3(comAdjustment.x, comAdjustment.y, comAdjustment.z),
                 partConnections = connections,
+                // The game turns these raw configs into its own DynamicAttachment
+                // lists in the OnDeserialized hook of the schema (one socket per
+                // shape bit), so the round-trip of Finalize is enough — see
+                // DynamicSockets.
+                dynamicAttachmentConfigs = dynamicSockets == null ? new DynamicAttachmentConfigItem[0] : dynamicSockets.Items,
+                dynamicCurrPivot = dynamicSockets == null ? float3.zero : dynamicSockets.Pivot,
                 config = definition.Modules ?? new JObject(),
                 state = definition.State ?? new JObject(),
                 variantsConfig = ResolveVariants(definition),
@@ -194,6 +201,8 @@ namespace PartRotatorExtension.PartLoader
                     patched.category = schema.category;
                 }
 
+                ValidateThermo(patched);
+
                 if (hasOverrides)
                 {
                     Diagnostics.Info("Applied overrides: " + string.Join(", ", GetKeys(overrides)));
@@ -217,6 +226,44 @@ namespace PartRotatorExtension.PartLoader
             }
 
             return keys.ToArray();
+        }
+
+        /// <summary>
+        /// The game clamps the skin density inside schema.Merge в†’ ValidateAfterMerge: a
+        /// skin heavier than the part itself (skinDensity * 0.0025 * area > mass) is cut
+        /// to a quarter of the mass. That clamp runs before the round-trip and before the
+        /// overrides, and the [OnDeserialized] hook of the round-trip rebuilds
+        /// thermoSettings from thermoConfig — so the clamp never survives for mod parts.
+        /// A part that flies with skin heavier than itself has a negative internal heat
+        /// mass; the temperature jobs of the game put it into the denominator of an
+        /// exponent, the exponent underflows to zero and 1 - 1/0 (the game only guards
+        /// +Infinity) drives the temperature of the whole rocket to NaN. The game's own
+        /// validation is therefore repeated on the final numbers.
+        /// </summary>
+        private static void ValidateThermo(RocketPartSchema schema)
+        {
+            if (schema.volumeData.volume == 0f)
+            {
+                Diagnostics.Warn(schema.prefabName + ": volume is 0 after the overrides, falling back to 1 m3");
+                schema.volumeData.volume = 1f;
+            }
+
+            if (schema.volumeData.area == 0f)
+            {
+                Diagnostics.Warn(schema.prefabName + ": area is 0 after the overrides, falling back to 1 m2");
+                schema.volumeData.area = 1f;
+            }
+
+            float skinMass = schema.thermoSettings.skinDensity * 0.0025f * schema.volumeData.area;
+            if (skinMass == 0f || skinMass > schema.mass)
+            {
+                float clamped = schema.mass * 0.25f / (0.0025f * schema.volumeData.area);
+                Diagnostics.Warn(schema.prefabName + ": the skin weighs " + JsonHelp.Invariant(skinMass) +
+                                 " kg, more than the part itself (" + JsonHelp.Invariant(schema.mass) +
+                                 " kg) — the rocket temperature goes NaN in flight. Skin density clamped " +
+                                 JsonHelp.Invariant(schema.thermoSettings.skinDensity) + " -> " + JsonHelp.Invariant(clamped) + " kg/m3");
+                schema.thermoSettings.skinDensity = clamped;
+            }
         }
     }
 

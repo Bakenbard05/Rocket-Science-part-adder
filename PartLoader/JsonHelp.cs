@@ -242,6 +242,11 @@ namespace PartRotatorExtension.PartLoader
             return value.ToString("0.####", CultureInfo.InvariantCulture);
         }
 
+        internal static string Invariant(double value)
+        {
+            return value.ToString("0.####", CultureInfo.InvariantCulture);
+        }
+
         internal static string Invariant(Vector3 value)
         {
             return "(" + Invariant(value.x) + ", " + Invariant(value.y) + ", " + Invariant(value.z) + ")";

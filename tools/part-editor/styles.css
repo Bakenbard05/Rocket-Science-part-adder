@@ -90,6 +90,11 @@ textarea.code, .code {
   font-size: 12px;
 }
 
+/* The JSON windows of the raw fields: big enough to read a module in. */
+textarea.code {
+  min-height: 150px;
+}
+
 input[type="color"] {
   padding: 2px;
   width: 100%;
@@ -191,20 +196,51 @@ body.resizing #viewport {
 .panel-right { border-left: 1px solid var(--line); }
 
 .group {
-  margin: 0 0 16px;
-  padding: 0 0 12px;
-  border-bottom: 1px solid var(--line);
+  margin: 0 0 10px;
+  padding: 10px 12px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 
-.group:last-child { border-bottom: none; }
+.group:hover { border-color: #333c4d; }
+
+.group > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.group > summary::-webkit-details-marker { display: none; }
+
+.group > summary::before {
+  content: "▾";
+  flex: 0 0 auto;
+  width: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.group:not([open]) > summary { margin-bottom: 0; }
+.group:not([open]) > summary::before { content: "▸"; }
+.group:not([open]) { padding-bottom: 10px; }
+
+.group > summary:hover h2 { color: var(--text); }
 
 .group h2 {
   margin: 0 0 10px;
-  font-size: 12px;
-  letter-spacing: 0.06em;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
 }
+
+.group > summary h2 { margin: 0; }
 
 .group-head {
   display: flex;
@@ -217,26 +253,28 @@ body.resizing #viewport {
 
 .advanced summary {
   cursor: pointer;
-  font-size: 12px;
-  letter-spacing: 0.06em;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .advanced summary::marker { color: var(--muted); }
 
-.field { margin-bottom: 10px; }
+.field { margin-bottom: 12px; }
+
+.field:last-child { margin-bottom: 6px; }
 
 .field > label {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
   color: var(--muted);
   font-size: 12px;
 }
 
 .field small {
   display: block;
-  margin-top: 3px;
+  margin-top: 4px;
   color: var(--muted);
   font-size: 11px;
 }
@@ -244,10 +282,10 @@ body.resizing #viewport {
 .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
 }
 
-.field-row .field { margin-bottom: 10px; min-width: 0; }
+.field-row .field { margin-bottom: 12px; min-width: 0; }
 
 .field-row input, .field-row select { min-width: 0; width: 100%; }
 
@@ -296,7 +334,7 @@ body.resizing #viewport {
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
 .viewport-stage {
@@ -327,17 +365,55 @@ body.resizing #viewport {
 
 /* ---------- the timeline of the motions ---------- */
 
+.anim-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.anim-bar .btn { white-space: nowrap; }
+
+.anim-bar .anim-time {
+  min-width: 56px;
+  text-align: right;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.anim-scrub-label {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.anim-bar #anim-scrub {
+  flex: 1 1 180px;
+  min-width: 100px;
+}
+
+.anim-bar-hint {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+body:not(.has-animations) .anim-bar { display: none; }
+
 .anim-timeline {
   border-top: 1px solid var(--line);
   background: var(--panel);
   overflow: auto;
-  max-height: 190px;
+  max-height: 250px;
   min-height: 0;
 }
 
-.anim-timeline:empty {
-  display: none;
-}
+.anim-timeline:empty { display: none; }
+
+body:not(.has-animations) .anim-timeline { display: none; }
 
 .anim-timeline-svg {
   display: block;
@@ -346,8 +422,10 @@ body.resizing #viewport {
 }
 
 .tl-row { fill: transparent; }
-.tl-row-selected { fill: rgba(255, 255, 255, 0.04); }
-.tl-lane { fill: rgba(255, 255, 255, 0.03); }
+.tl-row-odd { fill: rgba(255, 255, 255, 0.02); }
+.tl-row-selected { fill: rgba(77, 163, 255, 0.07); }
+.tl-track:hover .tl-row { fill: rgba(255, 255, 255, 0.05); }
+.tl-lane { fill: rgba(255, 255, 255, 0.03); cursor: crosshair; }
 .tl-axis { stroke: var(--line); stroke-width: 1; }
 .tl-tick { stroke: var(--line); stroke-width: 1; }
 .tl-label { fill: var(--muted); font-size: 10px; }
@@ -357,13 +435,106 @@ body.resizing #viewport {
 .tl-curve { stroke: var(--accent); stroke-width: 2; fill: none; pointer-events: none; }
 .tl-dot { fill: var(--accent); pointer-events: none; }
 .tl-key { cursor: grab; pointer-events: auto; }
-.tl-button { fill: rgba(255, 255, 255, 0.08); }
-.tl-button-mark { fill: var(--text); font-size: 10px; }
+.tl-key:hover { stroke: #ffffff; stroke-width: 2; }
+.tl-key:active { cursor: grabbing; }
+.tl-button { fill: rgba(255, 255, 255, 0.08); cursor: pointer; }
+.tl-button:hover { fill: rgba(255, 255, 255, 0.22); }
+.tl-button-mark { fill: var(--text); font-size: 10px; pointer-events: none; }
 .tl-playhead-line { stroke: #ffb347; stroke-width: 1; }
 .tl-playhead-head { fill: #ffb347; }
   /* The playhead lies over the keys: it must not catch the mouse. */
   .tl-playhead-line, .tl-playhead-head { pointer-events: none; }
   .tl-ruler, .tl-tick, .tl-label { pointer-events: none; }
+
+/* The graph editor of a motion: the curve of the channel over the time. */
+.anim-curve {
+  margin: 6px 0 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.anim-curve[hidden] { display: none; }
+
+.anim-curve-svg {
+  display: block;
+  width: 100%;
+  user-select: none;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.ac-plot { fill: rgba(255, 255, 255, 0.02); }
+.ac-grid { stroke: var(--line); stroke-width: 1; opacity: 0.55; }
+.ac-grid-zero { stroke: var(--muted); opacity: 0.8; }
+.ac-label { fill: var(--muted); font-size: 9px; pointer-events: none; }
+.ac-curve { stroke: var(--accent); stroke-width: 2; fill: none; pointer-events: none; }
+.ac-dot { fill: var(--accent); pointer-events: none; }
+.ac-key { cursor: grab; pointer-events: auto; stroke: transparent; stroke-width: 2; }
+.ac-key:hover { stroke: #ffffff; }
+.ac-key:active { cursor: grabbing; }
+.ac-playhead { stroke: #ffb347; stroke-width: 1; pointer-events: none; }
+
+/* The resizer of the graph: a horizontal splitter under it, like the ones of
+   the side panels (drag up to grow, double click resets). */
+.anim-curve-resizer {
+  position: relative;
+  height: 7px;
+  margin: 2px 0 4px;
+  cursor: ns-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.anim-curve-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  background: var(--line);
+  border-radius: 1px;
+  opacity: 0.55;
+  transition: background 0.12s, opacity 0.12s;
+}
+
+.anim-curve-resizer:hover::after,
+.anim-curve-resizer.dragging::after {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.anim-curve-resizer[hidden] { display: none; }
+
+body.resizing-curve {
+  user-select: none;
+  cursor: ns-resize;
+}
+
+/* The dope sheet of a motion: the points of the curve as a list. */
+.anim-keys { margin-top: 6px; }
+
+.anim-keys-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  padding: 0 4px 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.anim-keys .component-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.anim-key-time, .anim-key-value {
+  width: 100%;
+  min-width: 0;
+}
+
+.anim-keys .check { margin: 0; font-size: 11px; }
 
 .viewport-overlay {
   position: absolute;
@@ -539,6 +710,45 @@ body.resizing #viewport {
   white-space: nowrap;
 }
 
+/* The node picker of a module (the chambers of the gimbal) */
+.node-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-picker-row {
+  display: flex;
+  gap: 6px;
+}
+
+.node-picker-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.node-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.node-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: #263041;
+  font-size: 12px;
+}
+
+.node-chip .icon-btn {
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .component-editor {
   margin: 6px 0 4px;
   padding: 8px;
@@ -635,6 +845,71 @@ body.resizing #viewport {
 .flags { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 
 .flags .check { margin: 0; }
+
+/* ---------- dynamic sockets ---------- */
+
+.dynamic-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.dynamic-row {
+  padding: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.dynamic-row.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.35) inset;
+}
+
+.dynamic-head {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.dynamic-visible {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.dynamic-view-toggle {
+  margin: 8px 0 0;
+}
+
+.dynamic-head .role {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.dynamic-head .dynamic-preset {
+  min-width: 0;
+}
+
+.dynamic-shapes {
+  margin-top: 6px;
+}
+
+.dynamic-pivot-field {
+  margin-top: 8px;
+}
 
 /* ---------- status ---------- */
 

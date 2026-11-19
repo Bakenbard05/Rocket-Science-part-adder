@@ -118,8 +118,14 @@
 		<Reference Include="UnityEngine.ImageConversionModule">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
 		</Reference>
+		<Reference Include="UnityEngine.ParticleSystemModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.ParticleSystemModule.dll</HintPath>
+		</Reference>
 		<Reference Include="UnityEngine.PhysicsModule">
 		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.VFXModule">
+		  <HintPath>E:\SteamLibrary\steamapps\common\Rocket Science\Rocket Science_Data\Managed\UnityEngine.VFXModule.dll</HintPath>
 		</Reference>
   </ItemGroup>
 
@@ -129,6 +135,11 @@
     <None Update="config.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="preview.png" CopyToOutputDirectory="PreserveNewest" />
     <None Update="docs\**\*" CopyToOutputDirectory="Never" />
+
+    <!-- The schema of part.json is the one description of the format: the loader
+         validates every part against it and the editor shows the same rules. It is
+         embedded into the DLL, because the docs folder does not ship with the mod. -->
+    <EmbeddedResource Include="docs\part.schema.json" LogicalName="part.schema.json" />
   </ItemGroup>
 
 </Project>

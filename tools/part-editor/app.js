@@ -20,7 +20,13 @@ import {
   createFlameGeometry, createFlameMaterial, applyFlameParams,
 } from './flame.js';
 import { createTimeline } from './anim-timeline.js';
+import { createCurveEditor as createMotionCurve, motionDuration, motionPoints, sampleMotion } from './anim-curve.js';
 import { createCurveEditor, defaultFlameProfile } from './flame-curve.js';
+import { STATE_DEFAULTS } from './state-defaults.js';
+import { createHistory } from './history.js';
+import { loadSchema, validateAgainstSchema } from './schema.js';
+import { templateFor } from './templates.js';
+import { DYNAMIC_PRESETS, DYNAMIC_DIRECTIONS, DYNAMIC_SHAPES, DYNAMIC_SHAPE_BITS } from './dynamic-presets.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -59,7 +65,11 @@ function defaultPart() {
     }],
     cableAttachments: [],
     centerOfMassAdjustment: [0, 0, 0],
-    radialSnapping: 0,
+    radialSnapping: -1,
+    // Surface sockets (the game's dynamic attachments): the defindex of a stock
+    // config plus the shapes the socket takes, see dynamic-presets.js.
+    dynamicAttachmentConfigs: [],
+    dynamicCurrPivot: [0, 0, 0],
     modules: {},
     state: {},
     variants: [],
@@ -82,6 +92,7 @@ const state = {
   soundFile: null,         // the sound of the engine (sound.wav)
   soundData: '',           // the same file as base64, for the export and the library
   explodeRest: null,        // rest positions of the mesh objects for the exploded view
+  explodeOffsets: null,     // the offsets of the exploded view, added on top of the animation pose
   hiddenObjects: 0,         // line and point objects the game cannot render
   strippedLines: 0,         // line elements removed from an OBJ before parsing
   previewTextures: { albedo: null, normal: null, mask: null },
@@ -97,7 +108,251 @@ const state = {
   volumeInfo: null,       // the last measurement of the meshes (volume, area, per-mesh list)
   volumePending: false,   // the measurement is scheduled and has not run yet
   jsonInvalid: {},        // 'modules'|'state'|'thermo'|'overrides' -> true while the raw JSON is broken
+  schema: null,           // the schema of part.json (the loader checks the same rules)
+  dynamicProbe: null,     // { index, point: [x,y,z], normal: [x,y,z] } of the socket preview
+  dynamicHidden: new WeakSet(), // socket entries the preview does not draw
+  dynamicView: true,      // the sockets are drawn on the model at all
 };
+
+// ---------------------------------------------------------------------------
+// Undo, redo and the draft of the session
+// ---------------------------------------------------------------------------
+
+// The undo history: every change stores the part, so Ctrl+Z walks back through
+// them. The draft is the same snapshot, written into the browser, so a closed
+// tab does not cost the work of the day.
+const DRAFT_KEY = 'partadder.editor.draft';
+const DRAFT_MAX_AGE = 24 * 60 * 60 * 1000;
+
+function captureState() {
+  return JSON.stringify({ part: state.part, flame: state.flame, flames: state.flames });
+}
+
+function restoreState(text) {
+  let snapshot = null;
+  try {
+    snapshot = JSON.parse(text);
+  } catch (e) {
+    return;
+  }
+  if (!snapshot || !snapshot.part) return;
+  state.part = normalizePart(snapshot.part);
+  if (snapshot.flame) state.flame = snapshot.flame;
+  if (Array.isArray(snapshot.flames)) state.flames = snapshot.flames;
+  fillForm();
+  refreshStructure();
+}
+
+const history = createHistory({
+  limit: 80,
+  capture: captureState,
+  restore: restoreState,
+  onChange: updateHistoryButtons,
+});
+
+function updateHistoryButtons() {
+  const undo = $('btn-undo');
+  const redo = $('btn-redo');
+  if (undo) undo.disabled = !history.canUndo();
+  if (redo) redo.disabled = !history.canRedo();
+  // The draft follows every step of the history, so the work is never lost.
+  scheduleDraftSave();
+}
+
+// Every keystroke in the editor is a change of the part: the history waits a
+// moment, so a word is one step and not a dozen.
+document.addEventListener('input', () => {
+  history.schedule();
+  scheduleDraftSave();
+}, true);
+
+// A button can change the part as well (a connection is removed, a module is
+// added). The push only records something when the part really changed, so a
+// click that did nothing costs nothing.
+document.addEventListener('click', () => {
+  history.schedule(0);
+}, true);
+
+// The buttons of the toolbar and the usual keys.
+document.addEventListener('keydown', (event) => {
+  const target = event.target;
+  const tag = (target?.tagName || '').toLowerCase();
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable;
+
+  // The space plays the animation, like in Blender.
+  if (event.code === 'Space' && !typing && tag !== 'button') {
+    event.preventDefault();
+    togglePreview();
+    return;
+  }
+
+  // The Delete removes the selected keyframe.
+  if ((event.key === 'Delete' || event.key === 'Backspace') && !typing && state.animPreview.key) {
+    event.preventDefault();
+    removeAnimationKey();
+    return;
+  }
+
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === 'z' && !event.shiftKey) {
+    event.preventDefault();
+    history.undo();
+  } else if (key === 'y' || (key === 'z' && event.shiftKey)) {
+    event.preventDefault();
+    history.redo();
+  }
+});
+
+// The draft of the session.
+let draftTimer = null;
+
+function scheduleDraftSave() {
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    draftTimer = null;
+    saveDraft();
+  }, 1000);
+}
+
+function saveDraft() {
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      part: state.part,
+      flame: state.flame,
+      flames: state.flames,
+      savedAt: Date.now(),
+    }));
+  } catch (e) {
+    // A full browser storage must not break the editor.
+  }
+}
+
+// Brings the draft of the last session back, when there is one.
+function restoreDraft() {
+  let draft = null;
+  try {
+    const text = localStorage.getItem(DRAFT_KEY);
+    if (!text) return false;
+    draft = JSON.parse(text);
+  } catch (e) {
+    return false;
+  }
+  if (!draft || !draft.part) return false;
+  if (!draft.savedAt || Date.now() - draft.savedAt > DRAFT_MAX_AGE) return false;
+
+  state.part = normalizePart(draft.part);
+  if (draft.flame) state.flame = draft.flame;
+  if (Array.isArray(draft.flames)) state.flames = draft.flames;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// The mass and the connections from the mesh
+// ---------------------------------------------------------------------------
+
+// The densities the mass can be computed with. The first one is the rule of the
+// loader: a part without a mass in part.json gets the volume of its mesh times
+// 1000 kg/m3.
+const DENSITIES = [
+  { value: 1000, key: 'density.structure' },
+  { value: 2700, key: 'density.aluminium' },
+  { value: 7800, key: 'density.steel' },
+  { value: 1600, key: 'density.carbon' },
+  { value: 1200, key: 'density.plastic' },
+  { value: 2600, key: 'density.rock' },
+];
+
+function fillDensitySelect() {
+  const select = $('f-density');
+  if (!select) return;
+  select.innerHTML = '';
+  for (const density of DENSITIES) {
+    const option = document.createElement('option');
+    option.value = String(density.value);
+    option.textContent = `${t(density.key)} (${density.value} kg/m³)`;
+    select.append(option);
+  }
+}
+
+// The mass of the part from the volume of its mesh.
+function massFromMesh() {
+  const info = ensureVolumeInfo();
+  if (!info || !(info.volume > 0)) {
+    statusLine(t('status.massNoMesh'), 'warn');
+    return;
+  }
+
+  const density = Number($('f-density')?.value) || 1000;
+  const mass = Math.max(0.1, Math.round(info.volume * density * 10) / 10);
+  state.part.mass = mass;
+  $('f-mass').value = String(mass);
+  updateModelInfo();
+  refreshScene();
+  history.push();
+  statusLine(t('status.massFromMesh', { mass, volume: info.volume.toFixed(3), density }), 'ok');
+}
+
+// The bounds of the mesh in the space of the part (metres).
+function modelBounds() {
+  if (!state.modelObject) return null;
+  const box = new THREE.Box3().setFromObject(state.modelObject);
+  if (box.isEmpty()) return null;
+  return {
+    min: [box.min.x, box.min.y, box.min.z],
+    max: [box.max.x, box.max.y, box.max.z],
+  };
+}
+
+// Puts the attachment onto the surface of the mesh: the plane of the connection
+// goes to the far end of the mesh along its direction, and its size is the
+// silhouette of the mesh there.
+function fitAttachmentToMesh(att) {
+  const box = modelBounds();
+  if (!box) {
+    statusLine(t('status.fitNoMesh'), 'warn');
+    return;
+  }
+
+  const direction = attachmentDirection(att);
+  const components = [Math.abs(direction.x), Math.abs(direction.y), Math.abs(direction.z)];
+  const axis = components[1] >= components[0] && components[1] >= components[2] ? 1 : (components[0] >= components[2] ? 0 : 2);
+  // The two axes the plane of the connection lies in.
+  const others = [0, 1, 2].filter((a) => a !== axis);
+  const u = others[0];
+  const v = others[1];
+  const sign = (axis === 0 ? direction.x : axis === 1 ? direction.y : direction.z) >= 0 ? 1 : -1;
+
+  const position = [0, 0, 0];
+  position[axis] = sign > 0 ? box.max[axis] : box.min[axis];
+  position[u] = (box.min[u] + box.max[u]) / 2;
+  position[v] = (box.min[v] + box.max[v]) / 2;
+  att.position = position.map((value) => Math.round(value * 1000) / 1000);
+
+  const size = [0, 0, 0];
+  size[u] = Math.max(0.05, box.max[u] - box.min[u]);
+  size[v] = Math.max(0.05, box.max[v] - box.min[v]);
+  size[axis] = Math.max(0.02, Math.min(size[u], size[v]) * 0.1);
+  att.size = size.map((value) => Math.round(value * 1000) / 1000);
+
+  // The sockets of the connection sit in the middle of the plane.
+  const count = (att.sockets || []).length;
+  if (count) {
+    const radius = Math.min(size[u], size[v]) * 0.25;
+    att.sockets = att.sockets.map((socket, index) => {
+      const angle = count > 1 ? (index / count) * Math.PI * 2 : 0;
+      const next = [...(socket || [0, 0, 0])];
+      next[u] = Math.round(Math.cos(angle) * radius * 1000) / 1000;
+      next[v] = Math.round(Math.sin(angle) * radius * 1000) / 1000;
+      return next;
+    });
+  }
+
+  renderAttachmentEditor();
+  refreshScene();
+  history.push();
+  statusLine(t('status.fitDone'), 'ok');
+}
 
 // ---------------------------------------------------------------------------
 // three.js scene
@@ -139,9 +394,18 @@ const modelRoot = new THREE.Group();
 scene.add(modelRoot);
 const overlayRoot = new THREE.Group();
 scene.add(overlayRoot);
+// The ghost of a dynamic socket is placed on the hull by the pointer; it is
+// not part of the overlay, which every refresh of the scene clears.
+const dynamicProbeRoot = new THREE.Group();
+scene.add(dynamicProbeRoot);
+// The zones and the glyphs of the surface sockets on the part. Its own root, so
+// a refresh of the scene does not wipe it and a socket change does not have to
+// rebuild the scene.
+const dynamicViewRoot = new THREE.Group();
+scene.add(dynamicViewRoot);
 
 // A hook for the tests: they look at the scene and at the state of the editor.
-window.partEditor = { scene, state, overlayRoot };
+window.partEditor = { scene, state, overlayRoot, dynamicProbeRoot, dynamicViewRoot, toJson, validate, exportObj };
 
 const transform = new TransformControls(camera, renderer.domElement);
 transform.setSize(0.8);
@@ -481,16 +745,30 @@ function setModel(object, fileName) {
   $('drop-hint').style.display = 'none';
   state.modelNodeMap = buildModelNodeMap();
   previewBases.clear();
-  state.explodeRest = null;
+  state.explodeRest = object.children.map((child) => child.position.clone());
+  state.explodeOffsets = null;
+  // A new mesh is shown in its rest pose: a preview time left over from the
+  // previous part would otherwise shift the animated nodes of the fresh model.
+  state.animPreview.playing = false;
+  state.animPreview.time = 0;
+  state.animPreview.only = null;
   populateAnimationNodes();
   populateNodeMaterialSelect();
+  // The node pickers of the modules (the gimbal chambers) list the nodes of the
+  // mesh, so they are rebuilt when a mesh arrives.
+  renderComponents();
   applyAnimationPreview();
+  updatePreviewUi();
   updateModelInfo();
   scheduleVolumeMeasure();
+  scheduleDynamicView();
   renderStatus();
 }
 
 function disposeModel() {
+  state.dynamicProbe = null;
+  disposeGroup(dynamicProbeRoot);
+  clearDynamicView();
   if (!state.modelObject) return;
   if (reentryShell) {
     modelRoot.remove(reentryShell);
@@ -520,6 +798,7 @@ function disposeModel() {
   renderVolumeInfo();
   previewBases.clear();
   state.explodeRest = null;
+  state.explodeOffsets = null;
   populateAnimationNodes();
   populateNodeMaterialSelect();
 }
@@ -821,6 +1100,7 @@ function applyModelTransform() {
   const scale = Number(state.part.scale) > 0 ? Number(state.part.scale) : 1;
   modelRoot.scale.setScalar(units * scale);
   scheduleVolumeMeasure(180);
+  scheduleDynamicView();
   updateReentryShell();
 }
 
@@ -2088,6 +2368,27 @@ function runCheck() {
     add('ok', t('check.meshOk'));
   }
 
+  // The mesh itself: the game cannot draw a few of the things three.js can, so
+  // the faces are looked at before the export.
+  const mesh = inspectMesh();
+  if (state.modelObject && mesh.faces > 0) {
+    if (mesh.broken > 0) add('error', t('check.meshBroken', { n: mesh.broken }));
+    if (mesh.degenerate > 0) add('warn', t('check.meshDegenerate', { n: mesh.degenerate }));
+    if (mesh.withoutNormals > 0) add('warn', t('check.meshNoNormals', { n: mesh.withoutNormals }));
+    if (mesh.withoutUv > 0) add('warn', t('check.meshNoUv', { n: mesh.withoutUv }));
+  }
+
+  // The schema of part.json: the loader checks the same rules, so what is wrong
+  // here is what the game would refuse.
+  if (state.schema) {
+    const schemaCheck = validateAgainstSchema(toJson(state.part), state.schema);
+    for (const error of schemaCheck.errors) add('error', error);
+    for (const warning of schemaCheck.warnings) add('warn', warning);
+    if (!schemaCheck.errors.length && !schemaCheck.warnings.length) {
+      add('ok', t('check.schemaOk'));
+    }
+  }
+
   // The defindex
   if (part.defindex) {
     add('ok', t('check.defindexSet', { id: part.defindex }));
@@ -2145,6 +2446,82 @@ function runCheck() {
     add('ok', t('check.attachmentsOk', { n: attachments.length }));
   }
 
+  // The separator of a fairing or of a jettison breaks the connections it
+  // names: detachConnIds are ids of the attachments of this part. The game
+  // reads them without a null check (PayloadFairingModule.ApplyForces ->
+  // part.GetAttachment(id).Config), and the exception escapes the flight
+  // command buffer before it clears itself, so the decouple repeats every
+  // frame and the rocket is thrown away. The loader repairs a part with a
+  // single attachment and drops the jettison of a part with several.
+  const separator = part.modules?.['Model.ResourceSeparatorModule'];
+  const jettisonModule = part.modules?.['Model.PayloadFairingModule'] || part.modules?.['Model.JettisonModule'];
+  if (separator) {
+    const list = Array.isArray(separator.detachConnIds)
+      ? separator.detachConnIds.map(Number).filter(Number.isFinite)
+      : [];
+    const bad = [...new Set(list.filter((id) => !ids.has(id)))];
+    const available = [...ids].join(', ') || '—';
+    if (!list.length) {
+      add(ids.size === 1 ? 'warn' : 'error',
+        t(ids.size === 1 ? 'check.separatorEmptyOne' : 'check.separatorEmpty', { ids: available }));
+    } else if (bad.length) {
+      add(ids.size === 1 ? 'warn' : 'error',
+        t(ids.size === 1 ? 'check.separatorIdsOne' : 'check.separatorIds',
+          { bad: bad.join(', '), ids: available }));
+    } else {
+      add('ok', t('check.separatorOk', { ids: [...new Set(list)].join(', ') }));
+    }
+  } else if (jettisonModule) {
+    add('warn', t('check.jettisonNoSeparator'));
+  }
+  if (jettisonModule && !part.modules?.['Model.PartStateModule']) {
+    add('warn', t('check.jettisonNoState'));
+  }
+
+  // Surface sockets: the game looks every config up in its own cache without a
+  // check (RocketPartSchema.ProcessDynamicAttachments), so the loader drops an
+  // id it does not know, and a socket without a shape connects to nothing.
+  const dynamicSockets = part.dynamicAttachmentConfigs || [];
+  attachments.forEach((attachment, index) => {
+    if ((attachment.flags || []).includes('dynamic')) {
+      add('warn', t('check.dynamicFlag', { i: index + 1 }));
+    }
+  });
+  if (dynamicSockets.length) {
+    const unknownIds = [];
+    const unknownShapes = [];
+    const unknownNames = [];
+    dynamicSockets.forEach((entry, index) => {
+      if (!dynamicPresetOf(entry.defindex)) unknownIds.push(entry.defindex);
+      if (!dynamicKnownShapes(entry.shape).length) unknownShapes.push(index + 1);
+      const bad = dynamicUnknownShapes(entry.shape);
+      if (bad.length && dynamicKnownShapes(entry.shape).length) unknownNames.push(`#${index + 1} ${bad.join(', ')}`);
+    });
+    if (unknownIds.length) add('error', t('check.dynamicIds', { ids: unknownIds.join(', ') }));
+    if (unknownShapes.length) add('error', t('check.dynamicShapes', { ids: unknownShapes.join(', ') }));
+    if (unknownNames.length) add('warn', t('check.dynamicShapeName', { names: unknownNames.join('; ') }));
+    const receivers = dynamicSockets.filter((entry) => dynamicPresetOf(entry.defindex)?.role === 'parent').length;
+    if (!unknownIds.length && !unknownShapes.length) {
+      add('ok', t('check.dynamicOk', {
+        n: dynamicSockets.length,
+        parents: receivers,
+        current: dynamicSockets.length - receivers,
+      }));
+    }
+
+    // The pivot is the point inside the hull the game aims at when the part is
+    // put onto another one: a point outside the mesh has nothing to hit.
+    const bounds = modelBounds();
+    const pivot = part.dynamicCurrPivot;
+    const needsPivot = dynamicSockets.some((entry) => dynamicPresetOf(entry.defindex)?.role === 'current');
+    if (needsPivot && bounds && pivot) {
+      const outside = pivot.some((value, axis) => (
+        Number(value) < bounds.min[axis] - 1e-3 || Number(value) > bounds.max[axis] + 1e-3
+      ));
+      if (outside) add('warn', t('check.dynamicPivot'));
+    }
+  }
+
   // The animations point at nodes of the mesh
   const nodes = new Set(state.modelNodeMap ? state.modelNodeMap.keys() : []);
   const badNodes = (part.animations || [])
@@ -2154,6 +2531,22 @@ function runCheck() {
     add('error', t('check.animationNodes', { names: [...new Set(badNodes)].join(', ') }));
   } else if ((part.animations || []).length) {
     add('ok', checkAnimations(part.animations.length));
+  }
+
+  // The game only announces the transitions listed in Model.PartStateModule, so a
+  // trigger name that is not there never fires (the motion waits in its first pose).
+  // One name in both fields is fine: the transition then toggles the motion.
+  const triggerNames = animationTriggers().map((item) => item.toLowerCase());
+  const unknownTriggers = [];
+  (part.animations || []).forEach((animation, index) => {
+    for (const name of new Set([animation.trigger, animation.foldTrigger].filter(Boolean))) {
+      if (!triggerNames.includes(name.toLowerCase())) {
+        unknownTriggers.push(`${index + 1}: ${name}`);
+      }
+    }
+  });
+  if (unknownTriggers.length) {
+    add('warn', t('check.animUnknownTrigger', { list: unknownTriggers.join(', ') }));
   }
 
   // The game creates the modules of a part by walking its state: a module of
@@ -2200,6 +2593,23 @@ function runCheck() {
       add('warn', t('check.startStopLoop', { name: start }));
     } else if (end && end === loop) {
       add('warn', t('check.startStopLoop', { name: end }));
+    }
+  }
+
+  // The gimbal of an engine turns the listed nodes: EngineGimbalModuleCtrl
+  // looks every path up with transform.Find and then reads its rotation
+  // without a null check, so a path that names no node throws in the game
+  // (the loader drops such a path and removes a gimbal without nodes).
+  const gimbal = part.modules?.['Model.EngineGimbalModule'];
+  if (gimbal) {
+    const chambers = Array.isArray(gimbal.combustionChambers) ? gimbal.combustionChambers : [];
+    const missing = chambers.filter((path) => !resolveAnimationNode(path));
+    if (!chambers.length) {
+      add('warn', t('check.gimbalEmpty'));
+    } else if (missing.length) {
+      add('warn', t('check.gimbalMissing', { names: missing.join(', ') }));
+    } else {
+      add('ok', t('check.gimbalOk', { n: chambers.length }));
     }
   }
 
@@ -2265,6 +2675,13 @@ function runCheck() {
         kelvin: Math.round(forecast.kelvin),
       }));
     }
+
+    // The skin is a 2.5 mm metal sheet over the whole area: heavier than the
+    // part itself, the internal heat mass of the game turns negative and the
+    // temperature jobs break (the game clamps it in ValidateAfterMerge; the
+    // loader repeats the clamp after the overrides — SchemaFactory.ValidateThermo).
+    const skinCheck = skinMassCheck(volume);
+    if (skinCheck) add(skinCheck.kind, t('check.skinMass', skinCheck));
   } else if (state.modelObject) {
     add('warn', t('check.fuelNoMesh'));
   }
@@ -2287,8 +2704,61 @@ function runCheck() {
   statusLine(errors || warnings ? t('check.doneProblems', { errors, warnings }) : t('check.doneOk'), errors ? 'bad' : warnings ? 'warn' : 'ok');
 }
 
-function checkAnimations(count) {
-  return t('check.animationsOk', { n: count });
+// Looks at the mesh of the part: the game cannot draw a mesh without an index
+// buffer, and a face with three points in one place or a number that is not a
+// number makes the importer of the game stumble.
+function inspectMesh() {
+  const result = { meshes: 0, vertices: 0, faces: 0, degenerate: 0, broken: 0, withoutNormals: 0, withoutUv: 0 };
+  const object = state.modelObject;
+  if (!object) return result;
+
+  object.updateWorldMatrix(true, true);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+
+  object.traverse((node) => {
+    if (!node.isMesh || !node.geometry) return;
+    const geometry = node.geometry;
+    const position = geometry.getAttribute('position');
+    if (!position) return;
+
+    result.meshes++;
+    result.vertices += position.count;
+    if (!geometry.getAttribute('normal')) result.withoutNormals++;
+    if (!geometry.getAttribute('uv')) result.withoutUv++;
+
+    const index = geometry.getIndex();
+    const count = index ? index.count : position.count;
+    result.faces += Math.floor(count / 3);
+
+    for (let i = 0; i + 2 < count; i += 3) {
+      a.fromBufferAttribute(position, index ? index.getX(i) : i);
+      b.fromBufferAttribute(position, index ? index.getX(i + 1) : i + 1);
+      c.fromBufferAttribute(position, index ? index.getX(i + 2) : i + 2);
+
+      if (!Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(a.z) ||
+          !Number.isFinite(b.x) || !Number.isFinite(b.y) || !Number.isFinite(b.z) ||
+          !Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(c.z)) {
+        result.broken++;
+        continue;
+      }
+
+      const ux = b.x - a.x;
+      const uy = b.y - a.y;
+      const uz = b.z - a.z;
+      const vx = c.x - a.x;
+      const vy = c.y - a.y;
+      const vz = c.z - a.z;
+      const area = 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+      if (area < 1e-12) result.degenerate++;
+    }
+  });
+
+  return result;
+}
+
+function checkAnimations(count) {  return t('check.animationsOk', { n: count });
 }
 
 function meshHasTriangles() {
@@ -2466,6 +2936,34 @@ function thermalForecast(info) {
     ratio,
     sphere,
     kind: kelvin < 240 ? 'error' : kelvin < 265 ? 'warn' : 'ok',
+  };
+}
+
+// The skin of the part is a 2.5 mm metal sheet spread over the whole surface
+// (skinMass = skinDensity * 0.0025 * area). When it weighs more than the part
+// itself, the internal heat mass (partMass - skinMass) turns negative and the
+// temperature jobs of the game divide an exponent by it: at time warp the
+// exponent underflows to zero and the NaN spreads over the whole rocket. The
+// game clamps the skin density in ValidateAfterMerge, and the loader now repeats
+// that clamp after the overrides (SchemaFactory.ValidateThermo) — this check
+// only tells the author the numbers the flight will use.
+function skinMassCheck(info) {
+  const part = state.part;
+  const mass = Number(part.mass) || 0;
+  const area = thermalAreaOf(info);
+  if (mass <= 0 || !(area > 0)) return null;
+
+  const thermo = part.thermo && typeof part.thermo === 'object' ? part.thermo : {};
+  const configured = Number(thermo.skinDensity);
+  const skinDensity = Number.isFinite(configured) && configured > 0 ? configured : THERMO_DEFAULTS.skinDensity;
+  const skinMass = area * 0.0025 * skinDensity;
+  if (!(skinMass > mass)) return null;
+
+  return {
+    kind: 'warn',
+    skin: skinMass.toFixed(1),
+    mass: mass.toFixed(1),
+    density: Math.round(mass * 0.25 / (0.0025 * area)),
   };
 }
 
@@ -3034,7 +3532,15 @@ function zipStore(files) {
   return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
 }
 
+// The OBJ is written from the rest pose: the animation preview and the exploded
+// view are positions of the editor only. Baking them into the exported mesh made
+// the next load of that mesh show the part already offset, and the animation added
+// its own offset on top of it.
 function exportObj(root, bakeScale = true, reference = modelRoot) {
+  return withRestPose(() => exportObjRest(root, bakeScale, reference));
+}
+
+function exportObjRest(root, bakeScale, reference) {
   const units = UNITS[state.part.units] ?? 1;
   const scale = Number(state.part.scale) > 0 ? Number(state.part.scale) : 1;
   const factor = bakeScale ? units * scale : 1;
@@ -3110,7 +3616,10 @@ function exportObj(root, bakeScale = true, reference = modelRoot) {
 
 function renderPreview(size, direction) {
   if (!state.modelObject) return null;
+  return withRestPose(() => renderPreviewRest(size, direction));
+}
 
+function renderPreviewRest(size, direction) {
   const box = new THREE.Box3().setFromObject(state.modelObject);
   if (box.isEmpty()) return null;
 
@@ -3531,15 +4040,27 @@ async function importStockPart() {
     state: stock.state && typeof stock.state === 'object' ? structuredClone(stock.state) : {},
     variants: Array.isArray(stock.variants) ? structuredClone(stock.variants) : [],
     attachments: stockAttachments(stock),
+    radialSnapping: stock.radialSnapping,
+    dynamicAttachmentConfigs: Array.isArray(stock.dynamicAttachmentConfigs)
+      ? structuredClone(stock.dynamicAttachmentConfigs)
+      : [],
+    dynamicCurrPivot: Array.isArray(stock.dynamicCurrPivot) ? structuredClone(stock.dynamicCurrPivot) : [0, 0, 0],
   };
 
   state.part = normalizePart(raw);
+  resetPreviewForPart();
   state.selection = null;
   state.component = null;
   state.variant = null;
   state.animation = null;
+  // The probe pointed at a socket of the previous part.
+  state.dynamicProbe = null;
+  disposeGroup(dynamicProbeRoot);
 
   fillForm();
+  // A stock engine carries the flame of the game: the preview shows it at once.
+  showEngineFlamePreview();
+  applyEngineFlame();
   refreshStructure();
   statusLine(t('stock.imported', { name: stock.name }), 'ok');
 }
@@ -3561,33 +4082,43 @@ function applyExplode(amount) {
   const children = root.children;
   if (!children.length) return;
 
+  // The rest positions are captured when the mesh loads (setModel), so a pose of
+  // the animation preview can never be baked into the exploded view.
   if (!state.explodeRest || state.explodeRest.length !== children.length) {
-    state.explodeRest = children.map((child) => child.position.clone());
+    state.explodeRest = children.map((child) => {
+      const base = previewBases.get(child);
+      return (base ? base.position : child.position).clone();
+    });
   }
 
-  if (amount <= 0.0001) {
+  state.explodeOffsets = null;
+  if (amount > 0.0001) {
+    // The directions are measured in the rest pose: the preview must not move the
+    // centre of a piece while the author spreads the view.
     children.forEach((child, index) => child.position.copy(state.explodeRest[index]));
-    return;
+    root.updateWorldMatrix(true, true);
+    const inverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
+    const centers = children.map((child) => new THREE.Box3()
+      .setFromObject(child)
+      .getCenter(new THREE.Vector3())
+      .applyMatrix4(inverse));
+
+    const modelCenter = new THREE.Vector3();
+    for (const center of centers) modelCenter.add(center);
+    modelCenter.multiplyScalar(1 / centers.length);
+
+    state.explodeOffsets = centers.map((center) => {
+      const direction = center.clone().sub(modelCenter);
+      const distance = direction.length();
+      if (distance < 1e-4) return new THREE.Vector3();
+      direction.normalize();
+      return direction.multiplyScalar(distance * amount);
+    });
   }
 
-  root.updateWorldMatrix(true, true);
-  const inverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
-  const centers = children.map((child) => new THREE.Box3()
-    .setFromObject(child)
-    .getCenter(new THREE.Vector3())
-    .applyMatrix4(inverse));
-
-  const modelCenter = new THREE.Vector3();
-  for (const center of centers) modelCenter.add(center);
-  modelCenter.multiplyScalar(1 / centers.length);
-
-  children.forEach((child, index) => {
-    const direction = centers[index].clone().sub(modelCenter);
-    const distance = direction.length();
-    if (distance < 1e-4) return;
-    direction.normalize();
-    child.position.copy(state.explodeRest[index]).addScaledVector(direction, distance * amount);
-  });
+  // The offsets are composed with the animation pose in one place, so neither of
+  // the two features eats the offset of the other.
+  applyAnimationPreview();
 }
 
 $('f-explode').addEventListener('input', (event) => {
@@ -4063,8 +4594,9 @@ function useCustomFlame(name) {
   statusLine(t('flame.addedToEngine', { name }), 'ok');
 }
 
-// Loads a saved flame into the editor.
-async function loadCustomFlame(index) {
+// Loads a saved flame into the editor. The quiet mode is for the preview of a
+// freshly loaded part: the status bar then tells about the part, not the flame.
+async function loadCustomFlame(index, options) {
   const flame = state.flames[index];
   if (!flame) return;
 
@@ -4078,7 +4610,50 @@ async function loadCustomFlame(index) {
 
   renderFlameEditor();
   updateFlamePreview();
-  statusLine(t('flame.loaded', { name: flame.name }), 'ok');
+  if (!options?.silent) statusLine(t('flame.loaded', { name: flame.name }), 'ok');
+}
+
+// Puts the preview on the flame the engine of the part takes: the first name of
+// the list of the engine that the editor can show. A name of the library is
+// loaded with the values of the author, a name of the game takes the preset of
+// that flame. Without this the preview would keep the flame of the previous
+// part, and the author would tune a flame the engine does not use.
+function applyEngineFlame() {
+  const names = engineFlameNames(state.part);
+  if (!names.length) return false;
+
+  // The flame that is open is already the flame of the engine.
+  if (state.flame?.name && names.includes(state.flame.name)) return false;
+
+  // A saved flame of the editor: the values of the author.
+  for (const name of names) {
+    const index = state.flames.findIndex((flame) => flame.name === name);
+    if (index >= 0) {
+      loadCustomFlame(index, { silent: true });
+      return true;
+    }
+  }
+
+  // A flame of the game: the preview shows the values of that flame.
+  const stock = names.find((name) => ENGINE_FLAMES.includes(name));
+  if (stock) {
+    state.flame = defaultFlame(stock);
+    applyFlamePreset(state.flame, stock);
+    if ($('flame-name')) $('flame-name').value = '';
+    return true;
+  }
+
+  // A custom flame that is not in the library: there is nothing to show.
+  return false;
+}
+
+// The preview of a part with an engine shows the flame at once: the flame is a
+// part of the look of the engine, not an optional extra of the preview.
+function showEngineFlamePreview() {
+  const box = $('chk-flame');
+  if (!box || box.checked) return;
+  if (!engineForcePoint()) return;
+  box.checked = true;
 }
 
 $('btn-flame-save')?.addEventListener('click', saveCustomFlame);
@@ -4866,6 +5441,16 @@ function renderComponents() {
     title.className = 'label';
     title.textContent = def ? componentText(def.label) : key;
 
+    // The state entry of this module was filled with the stock values: the game
+    // creates the module with them, the author did not write them.
+    let filled = null;
+    if (filledStateModules.has(key)) {
+      filled = document.createElement('span');
+      filled.className = 'badge';
+      filled.textContent = 'state';
+      filled.title = t('comp.filledState');
+    }
+
     const remove = document.createElement('button');
     remove.className = 'icon-btn';
     remove.textContent = '✕';
@@ -4876,6 +5461,7 @@ function renderComponents() {
     });
 
     row.append(badge, title, remove);
+    if (filled) row.append(filled);
     row.addEventListener('click', () => {
       state.component = state.component === key ? null : key;
       renderComponents();
@@ -5136,6 +5722,96 @@ function componentInput(field, target, write) {
     return input;
   }
 
+  if (field.type === 'nodes') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'node-picker';
+
+    const current = () => {
+      const list = getPath(target, field.path);
+      return Array.isArray(list) ? list.filter((item) => typeof item === 'string' && item) : [];
+    };
+
+    const chips = document.createElement('div');
+    chips.className = 'node-chips';
+
+    const refresh = () => {
+      chips.textContent = '';
+      const list = current();
+      if (!list.length) {
+        const empty = document.createElement('small');
+        empty.className = 'hint';
+        empty.textContent = t('nodes.empty');
+        chips.append(empty);
+        return;
+      }
+
+      list.forEach((path, index) => {
+        const chip = document.createElement('span');
+        chip.className = 'node-chip';
+        chip.append(document.createTextNode(path));
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'icon-btn';
+        remove.title = t('nodes.remove');
+        remove.textContent = '\u00d7';
+        remove.addEventListener('click', () => {
+          const next = current().slice();
+          next.splice(index, 1);
+          write(next);
+          refresh();
+        });
+        chip.append(remove);
+        chips.append(chip);
+      });
+    };
+
+    const row = document.createElement('div');
+    row.className = 'node-picker-row';
+
+    const select = document.createElement('select');
+    const paths = modelNodePaths();
+    if (!paths.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = t('nodes.noNodes');
+      select.append(option);
+      select.disabled = true;
+    } else {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = t('nodes.pick');
+      select.append(placeholder);
+      for (const path of paths) {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = path;
+        select.append(option);
+      }
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'icon-btn';
+    button.title = t('nodes.add');
+    button.textContent = '+';
+    button.disabled = !paths.length;
+    button.addEventListener('click', () => {
+      if (!select.value) return;
+      const next = current().slice();
+      const path = 'model/' + select.value;
+      if (!next.includes(path)) next.push(path);
+      write(next);
+      refresh();
+      select.value = '';
+    });
+
+    row.append(select, button);
+    wrapper.append(row, chips);
+    refresh();
+    return wrapper;
+  }
+
   if (field.type === 'numbers' || field.type === 'strings') {
     const input = document.createElement('input');
     input.type = 'text';
@@ -5205,6 +5881,22 @@ function componentInput(field, target, write) {
   return textarea;
 }
 
+// The attachment a part is mounted by: the one facing down when the part has
+// it (the base of a nose cone or of a stage), else the only attachment left.
+// The separator of a fairing breaks that connection, so a new one starts
+// there instead of at a hard-coded stock id.
+function baseAttachmentId() {
+  const attachments = state.part.attachments || [];
+  let best = null;
+  for (const attachment of attachments) {
+    const id = Number(attachment.id);
+    if (!Number.isFinite(id)) continue;
+    const y = toVec3(attachment.direction, [0, 1, 0])[1];
+    if (!best || y < best.y) best = { id, y };
+  }
+  return best ? best.id : 0;
+}
+
 function addComponent(key) {
   const def = COMPONENT_BY_KEY[key];
   if (!def) return;
@@ -5212,9 +5904,22 @@ function addComponent(key) {
   const modules = componentBucket('modules');
   if (!modules[key] || typeof modules[key] !== 'object') modules[key] = componentDefaults(def.config);
 
-  if (def.state.length) {
-    const states = componentBucket('state');
-    if (!states[key] || typeof states[key] !== 'object') states[key] = componentDefaults(def.state);
+  // The separator breaks the connections it names (detachConnIds are ids of
+  // the attachments of this part) and the game reads them without a null
+  // check: a stale stock id throws inside the decouple command, which the
+  // game then repeats every frame. A fresh separator therefore points at the
+  // connection the part is mounted by instead of a hard-coded number.
+  if (key === 'Model.ResourceSeparatorModule' &&
+      !(Array.isArray(modules[key].detachConnIds) && modules[key].detachConnIds.length)) {
+    modules[key].detachConnIds = [baseAttachmentId()];
+  }
+
+  // The game creates the modules of a part from its state, so every module of
+  // the config needs an entry there, even an empty one: a module without it is
+  // never created (the loader adds the entry for the modules it fills itself).
+  const states = componentBucket('state');
+  if (!states[key] || typeof states[key] !== 'object') {
+    states[key] = def.state.length ? componentDefaults(def.state) : {};
   }
 
   state.component = key;
@@ -5312,6 +6017,7 @@ function animationDefaults() {
     path: '',
     type: 'spin',
     axis: [0, 1, 0],
+    pivot: [0, 0, 0],
     speed: 30,
     stowed: 0,
     deployed: 90,
@@ -5320,6 +6026,7 @@ function animationDefaults() {
     foldTrigger: '',
     tint: '',
     tintAmount: 1,
+    translate: false,
     keys: [],
   };
 }
@@ -5333,28 +6040,322 @@ function defaultAnimationKeys(duration = 2) {
   ];
 }
 
-// The angle of a motion with keys at the given time, the same way the runtime
-// driver reads them (PartAnimationDriver.SampleKeys).
-function sampleAnimationKeys(animation, time) {
-  const keys = Array.isArray(animation.keys) ? animation.keys : [];
-  if (!keys.length) return 0;
-  if (keys.length === 1) return Number(keys[0].angle) || 0;
-  if (time <= (Number(keys[0].time) || 0)) return Number(keys[0].angle) || 0;
+// The angle of a motion at a given time is read by the graph editor
+// (anim-curve.js), the same way the runtime driver reads it
+// (PartAnimationDriver.SampleKeys).
 
-  for (let i = 0; i < keys.length - 1; i++) {
-    const from = keys[i];
-    const to = keys[i + 1];
-    const fromTime = Number(from.time) || 0;
-    const toTime = Number(to.time) || 0;
-    if (time > toTime) continue;
-    const span = toTime - fromTime;
-    let t = span <= 0.0001 ? 1 : (time - fromTime) / span;
-    t = Math.min(1, Math.max(0, t));
-    if (to.smooth !== false) t = t * t * (3 - 2 * t);
-    return (Number(from.angle) || 0) + ((Number(to.angle) || 0) - (Number(from.angle) || 0)) * t;
+// ---------------------------------------------------------------------------
+// The graph editor of a motion: the curve of the channel over the time, the
+// keyframes on it and the playhead. It works like the graph editor of
+// Blender: the curve is the value of the channel, the points on it are the
+// keyframes and a point is dragged to move its keyframe.
+// ---------------------------------------------------------------------------
+
+let curveEditor = null;
+
+// The height of the graph, kept between the sessions like the panel widths.
+const CURVE_STORE = 'partadder.editor.curveHeight';
+const CURVE_LIMITS = { min: 150, preferred: 190, max: 640 };
+
+function applyCurveHeight(height) {
+  const curve = $('anim-curve');
+  if (!curve) return;
+  if (height) {
+    curve.style.height = `${height}px`;
+  } else {
+    // No height of its own: the svg inside picks its default.
+    curve.style.height = '';
+  }
+}
+
+function loadCurveHeight() {
+  try {
+    const stored = Number(localStorage.getItem(CURVE_STORE));
+    if (Number.isFinite(stored) && stored >= CURVE_LIMITS.min) {
+      applyCurveHeight(Math.min(CURVE_LIMITS.max, stored));
+    }
+  } catch {
+    /* storage may be disabled; the height simply resets next time */
+  }
+}
+
+// The drag handle of the graph: works like the splitters of the side panels.
+function bindCurveResizer() {
+  const resizer = $('anim-curve-resizer');
+  const curve = $('anim-curve');
+  if (!resizer || !curve) return;
+
+  let dragging = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  resizer.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    dragging = true;
+    startY = event.clientY;
+    startHeight = curve.clientHeight || CURVE_LIMITS.preferred;
+    resizer.classList.add('dragging');
+    document.body.classList.add('resizing-curve');
+    try {
+      resizer.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic pointers (tests) refuse capture; the window listeners
+      // below still track the drag.
+    }
+  });
+
+  const move = (event) => {
+    if (!dragging) return;
+    // Drag up to grow the graph, like pulling the bottom edge of a window.
+    const height = Math.round(startHeight + (startY - event.clientY));
+    applyCurveHeight(Math.max(CURVE_LIMITS.min, Math.min(CURVE_LIMITS.max, height)));
+  };
+
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    document.body.classList.remove('resizing-curve');
+    try {
+      const height = curve.clientHeight;
+      if (height && Math.abs(height - CURVE_LIMITS.preferred) > 2) {
+        localStorage.setItem(CURVE_STORE, String(height));
+      } else {
+        localStorage.removeItem(CURVE_STORE);
+      }
+    } catch {
+      /* ignore storage failures */
+    }
+  };
+
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', stop);
+  window.addEventListener('pointercancel', stop);
+
+  resizer.addEventListener('dblclick', () => {
+    applyCurveHeight(null);
+    try {
+      localStorage.removeItem(CURVE_STORE);
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+function initCurveEditor() {
+  const root = $('anim-curve');
+  if (!root) return;
+
+  curveEditor = createMotionCurve(root, {
+    getAnimation: () => {
+      const animations = state.part.animations || [];
+      return state.animation === null ? null : animations[state.animation] || null;
+    },
+    getIndex: () => state.animation,
+    getTime: () => state.animPreview.time,
+    selectedKey: () => state.animPreview.key,
+    onScrub: (time) => setPreviewTime(time),
+    onSelectKey: (index) => {
+      if (index < 0) return;
+      state.animPreview.key = { track: state.animation, key: index };
+      renderAnimations();
+    },
+    onAddKey: (time, value) => addAnimationKey(state.animation, time, value),
+    onRemoveKey: (index) => {
+      const animation = (state.part.animations || [])[state.animation];
+      if (!animation?.keys?.[index]) return;
+      animation.keys.splice(index, 1);
+      state.animPreview.key = null;
+      renderAnimations();
+      renderStatus();
+    },
+    onDragKey: (point, time, value) => {
+      writeMotionPoint(state.animation, point, time, value);
+      applyAnimationPreview();
+      renderStatus();
+    },
+    onDragEnd: () => {
+      renderAnimations();
+    },
+  });
+}
+
+// Keeps the keyframes of a curve in time order. The runtime walks the pairs of
+// neighbouring keys, so an unordered list is sampled wrongly; a typed time or a
+// dragged point can cross a neighbour.
+function sortAnimationKeys(animation) {
+  if (!animation || animation.type !== 'keys' || !Array.isArray(animation.keys)) return;
+  animation.keys.sort((a, b) => (Number(a?.time) || 0) - (Number(b?.time) || 0));
+}
+
+// Writes a point of the curve back into the motion. The types of the game
+// store their curve in different fields, so the point is written into the
+// field that belongs to it.
+function writeMotionPoint(index, point, time, value) {
+  const animation = (state.part.animations || [])[index];
+  if (!animation) return;
+
+  if (animation.type === 'keys') {
+    const key = animation.keys?.[point.index];
+    if (!key) return;
+    // The keys of a motion live inside its loop, which is "duration" seconds long.
+    // A time past the end lengthens the loop instead of snapping back in the
+    // field: the runtime driver samples the curve over "duration", so a key
+    // written after the end would never be reached. A key is a number in metres
+    // or degrees, so it keeps hundredths (a step of 0.1 was too coarse for a
+    // small translation).
+    const at = Math.round(Math.max(0, time) * 100) / 100;
+    const duration = motionDuration(animation);
+    if (!(Number(animation.duration) > 0)) {
+      // The motion has no length written yet: pin the one the preview is already
+      // using, so the exported part.json loops over the same time.
+      animation.duration = duration;
+    } else if (at > duration) {
+      animation.duration = at;
+    }
+    key.time = at;
+    key.angle = Math.round(value * 100) / 100;
+    return;
   }
 
-  return Number(keys[keys.length - 1].angle) || 0;
+  if (animation.type === 'deploy') {
+    if (point.pose === 'stowed') {
+      animation.stowed = Math.round(value * 10) / 10;
+      return;
+    }
+
+    animation.deployed = Math.round(value * 10) / 10;
+    animation.duration = Math.max(0.01, Math.round(time * 100) / 100);
+    return;
+  }
+
+  // A spin: the slope of the line is the speed, the end of the line is the
+  // length of the motion.
+  const duration = Math.max(0.01, Math.round(time * 100) / 100);
+  animation.duration = duration;
+  animation.speed = Math.round((value / duration) * 10) / 10;
+}
+
+// The dope sheet of a motion: the points of the curve as a list, the way the
+// dope sheet of Blender shows the keyframes of a channel.
+function animationDopeSheet(animation, index) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'anim-keys';
+
+  const header = document.createElement('div');
+  header.className = 'anim-keys-head';
+  for (const title of [t('anim.sheetTime'), t('anim.sheetValue'), t('anim.keySmooth')]) {
+    const cell = document.createElement('span');
+    cell.className = 'label';
+    cell.textContent = title;
+    header.append(cell);
+  }
+  wrapper.append(header);
+
+  const list = document.createElement('div');
+  list.className = 'compact-list';
+  const points = motionPoints(animation);
+
+  points.forEach((point, pointIndex) => {
+    const row = document.createElement('div');
+    const selected = state.animPreview.key?.track === index && state.animPreview.key?.key === point.index;
+    row.className = 'component-row' + (selected ? ' selected' : '');
+
+    // A live write of a field of the key. The list is NOT rebuilt here: a
+    // renderAnimations() on every keystroke replaced the input the author was
+    // typing in, so typing a number restarted from the value of the model (a
+    // leading zero became 0 and the dot of a small number was lost). The row is
+    // normalized once, on "change", when the field is left or Enter is pressed.
+    const writeKey = (text, isTime) => {
+      const trimmed = String(text).trim();
+      if (!trimmed || trimmed === '-' || trimmed === '.' || trimmed === '-.') return;
+      const number = Number(trimmed);
+      if (!Number.isFinite(number)) return;
+      if (isTime) {
+        writeMotionPoint(index, point, number, point.value);
+      } else {
+        writeMotionPoint(index, point, point.time, number);
+      }
+      applyAnimationPreview();
+      renderStatus();
+    };
+
+    const time = document.createElement('input');
+    time.type = 'number';
+    time.step = '0.01';
+    time.className = 'anim-key-time';
+    time.value = String(Math.round(point.time * 100) / 100);
+    time.addEventListener('input', () => writeKey(time.value, true));
+    time.addEventListener('change', () => renderAnimations());
+
+    const value = document.createElement('input');
+    value.type = 'number';
+    // "any" keeps the browser from rejecting a small value such as 0.05: it is a
+    // number in metres, not a whole step of 0.1.
+    value.step = 'any';
+    value.className = 'anim-key-value';
+    value.value = String(Math.round(point.value * 100) / 100);
+    value.addEventListener('input', () => writeKey(value.value, false));
+    value.addEventListener('change', () => renderAnimations());
+
+    const smooth = document.createElement('label');
+    smooth.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = point.smooth !== false;
+    box.disabled = animation.type !== 'keys';
+    box.addEventListener('change', () => {
+      const key = animation.keys?.[point.index];
+      if (!key) return;
+      key.smooth = box.checked;
+      renderStatus();
+    });
+    const text = document.createElement('span');
+    text.textContent = animation.translate ? 'm' : '°';
+    smooth.append(box, text);
+
+    row.append(time, value, smooth);
+    row.addEventListener('click', (event) => {
+      if (event.target !== time && event.target !== value) {
+        if (point.index >= 0) state.animPreview.key = { track: index, key: point.index };
+        setPreviewTime(point.time);
+        renderAnimations();
+      }
+    });
+    list.append(row);
+  });
+
+  wrapper.append(list);
+
+  // A motion with keys gets a button to add one at the end.
+  if (animation.type === 'keys') {
+    const buttons = document.createElement('div');
+    buttons.className = 'input-row';
+    const add = document.createElement('button');
+    add.className = 'btn small';
+    add.textContent = t('anim.addKey');
+    add.addEventListener('click', () => {
+      const duration = motionDuration(animation);
+      const last = motionPoints(animation).at(-1);
+      addAnimationKey(index, Math.min(duration, (last?.time ?? 0) + 0.5), (last?.value ?? 0) + 45);
+    });
+    buttons.append(add);
+
+    const remove = document.createElement('button');
+    remove.className = 'btn small';
+    remove.textContent = t('anim.removeKey');
+    remove.disabled = !state.animPreview.key || state.animPreview.key.track !== index;
+    remove.addEventListener('click', () => removeAnimationKey());
+    buttons.append(remove);
+    wrapper.append(buttons);
+  }
+
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = t('anim.keysHint');
+  wrapper.append(hint);
+
+  return wrapper;
 }
 
 // ---------------------------------------------------------------------------
@@ -5377,11 +6378,77 @@ function animationAxis(animation) {
   return axis.normalize();
 }
 
+// The pivot of a motion: the point the node turns around, in the space of the
+// node. Zero turns the node around its own origin.
+function animationPivot(animation) {
+  const values = animation.pivot;
+  if (!values) return new THREE.Vector3();
+  return new THREE.Vector3(
+    Number(values[0]) || 0,
+    Number(values[1]) || 0,
+    Number(values[2]) || 0,
+  );
+}
+
+// The exploded view moves the root children of the mesh, and the animation
+// preview writes their positions and quaternions as well: every pose is rebuilt
+// from the rest positions captured when the mesh loaded, so the two never bake
+// an offset of one into the rest pose of the other.
+function resetRootChildrenPositions() {
+  const root = state.modelObject;
+  if (!root || !state.explodeRest || state.explodeRest.length !== root.children.length) return;
+  root.children.forEach((child, index) => child.position.copy(state.explodeRest[index]));
+}
+
+// The rest position of a root child, even while the preview or the exploded view
+// hold it away from it.
+function rootChildRestPosition(node) {
+  const root = state.modelObject;
+  if (!root || node.parent !== root || !state.explodeRest) return null;
+  const index = root.children.indexOf(node);
+  if (index < 0) return null;
+  return state.explodeRest[index] || null;
+}
+
+// The exploded view is an offset on top of the pose of the animation, not a pose
+// of its own.
+function applyExplodeOffsets() {
+  const root = state.modelObject;
+  const offsets = state.explodeOffsets;
+  if (!root || !offsets) return;
+  offsets.forEach((offset, index) => {
+    if (!offset) return;
+    const child = root.children[index];
+    if (child) child.position.add(offset);
+  });
+}
+
 // Mirrors PartAnimationDriver: localRotation = base * AngleAxis(angle, axis).
+// A motion with "translate" moves the node along the axis instead (metres), a
+// motion with a "pivot" turns around a shifted point: the position is moved so
+// that the pivot stays where it was.
 function applyAnimationPreview() {
   const animations = state.part.animations || [];
   const only = state.animPreview.only;
   const time = state.animPreview.time;
+
+  resetRootChildrenPositions();
+
+  // A node of a motion that is gone (the motion was removed or its path was
+  // changed) goes back to its rest pose instead of staying where the old motion
+  // left it.
+  const posed = new Set();
+  animations.forEach((animation, index) => {
+    if (only !== null && only !== index) return;
+    const node = resolveAnimationNode(animation.path);
+    if (node) posed.add(node);
+  });
+  for (const [node, base] of previewBases) {
+    if (posed.has(node)) continue;
+    node.quaternion.copy(base.quaternion);
+    node.position.copy(base.position);
+    previewBases.delete(node);
+  }
 
   animations.forEach((animation, index) => {
     if (only !== null && only !== index) return;
@@ -5389,38 +6456,87 @@ function applyAnimationPreview() {
     const node = resolveAnimationNode(animation.path);
     if (!node) return;
 
-    if (!previewBases.has(node)) previewBases.set(node, node.quaternion.clone());
+    if (!previewBases.has(node)) {
+      const rest = rootChildRestPosition(node);
+      previewBases.set(node, {
+        quaternion: node.quaternion.clone(),
+        position: (rest || node.position).clone(),
+      });
+    }
     const base = previewBases.get(node);
 
     let angle = 0;
-    if (animation.type === 'deploy') {
-      const duration = Number(animation.duration) > 0 ? Number(animation.duration) : 0.0001;
-      const t = Math.min(1, Math.max(0, time / duration));
-      const smooth = t * t * (3 - 2 * t);
-      angle = THREE.MathUtils.lerp(Number(animation.stowed) || 0, Number(animation.deployed) || 0, smooth);
-    } else if (animation.type === 'keys') {
-      // The keys of the motion, the timeline loops over the duration.
-      const duration = Number(animation.duration) > 0 ? Number(animation.duration) : 0.0001;
-      angle = sampleAnimationKeys(animation, time % duration);
+    if (animation.type === 'keys') {
+      // The keys of the motion: without a trigger the curve loops, with one it is
+      // a one-shot motion that the part state fires (PartAnimationDriver), so the
+      // preview holds the last pose instead of wrapping to the first one.
+      const duration = motionDuration(animation);
+      angle = animation.trigger || animation.foldTrigger
+        ? sampleMotion(animation, Math.min(time, duration))
+        : sampleMotion(animation, time % duration);
     } else {
-      angle = (Number(animation.speed) || 0) * time;
+      angle = sampleMotion(animation, time);
     }
 
-    node.quaternion
-      .copy(base)
-      .multiply(new THREE.Quaternion().setFromAxisAngle(animationAxis(animation), THREE.MathUtils.degToRad(angle)));
+    if (animation.translate) {
+      node.position.copy(base.position).addScaledVector(animationAxis(animation), angle);
+    } else {
+      const rotation = new THREE.Quaternion().setFromAxisAngle(animationAxis(animation), THREE.MathUtils.degToRad(angle));
+      node.quaternion.copy(base.quaternion).multiply(rotation);
+
+      const pivot = animationPivot(animation);
+      if (pivot.lengthSq() > 1e-6) {
+        // base * (pivot - rotation * pivot), the same math the driver runs.
+        const spin = pivot.clone().sub(pivot.clone().applyQuaternion(rotation));
+        node.position.copy(base.position).add(spin.applyQuaternion(base.quaternion));
+      }
+    }
   });
+
+  applyExplodeOffsets();
 }
 
 function restorePreviewBases() {
-  for (const [node, quaternion] of previewBases) node.quaternion.copy(quaternion);
+  for (const [node, base] of previewBases) {
+    node.quaternion.copy(base.quaternion);
+    node.position.copy(base.position);
+  }
   previewBases.clear();
+  // The exploded view is not part of the base pose: put its offsets back.
+  resetRootChildrenPositions();
+  applyExplodeOffsets();
+}
+
+// Runs a reader of the mesh (the OBJ export, the picture of the part) on the rest
+// pose. The animation preview and the exploded view are positions of the editor
+// only: a mesh exported while the preview played already had its animated node
+// baked in the wrong place, and every load of it showed the offset again.
+function withRestPose(callback) {
+  const root = state.modelObject;
+  for (const [node, base] of previewBases) {
+    node.quaternion.copy(base.quaternion);
+    node.position.copy(base.position);
+  }
+  const offsets = state.explodeOffsets;
+  state.explodeOffsets = null;
+  if (root && state.explodeRest && state.explodeRest.length === root.children.length) {
+    root.children.forEach((child, index) => child.position.copy(state.explodeRest[index]));
+  }
+  try {
+    return callback();
+  } finally {
+    state.explodeOffsets = offsets;
+    // Brings the preview and the exploded view back to the screen.
+    applyAnimationPreview();
+  }
 }
 
 function setPreviewTime(time) {
   state.animPreview.time = Math.max(0, Number(time) || 0);
   applyAnimationPreview();
   updatePreviewUi();
+  if (timeline) timeline.updatePlayhead();
+  if (curveEditor) curveEditor.updatePlayhead();
 }
 
 function togglePreview() {
@@ -5462,6 +6578,18 @@ function resetPreview() {
   updatePreviewUi();
 }
 
+// Another part is about to be loaded: the preview of the previous one must not
+// shift the nodes of the new part at once (a leftover time would do exactly that)
+// and its selected key belongs to the old list of motions.
+function resetPreviewForPart() {
+  restorePreviewBases();
+  state.animPreview.playing = false;
+  state.animPreview.time = 0;
+  state.animPreview.only = null;
+  state.animPreview.key = null;
+  updatePreviewUi();
+}
+
 function updatePreviewUi() {
   const play = $('btn-anim-play');
   if (play) play.textContent = state.animPreview.playing ? t('anim.pause') : t('anim.play');
@@ -5496,6 +6624,7 @@ function tickAnimationPreview() {
   applyAnimationPreview();
   updatePreviewUi();
   if (timeline) timeline.updatePlayhead();
+  if (curveEditor) curveEditor.updatePlayhead();
 }
 
 function renderAnimations() {
@@ -5504,6 +6633,16 @@ function renderAnimations() {
   list.textContent = '';
 
   const animations = state.part.animations || [];
+  // The game reads the keys of a curve in order (it walks the neighbouring
+  // pairs), so the list is kept sorted by time: typing a time or dragging a point
+  // past its neighbour would otherwise leave a curve that the runtime samples
+  // wrongly.
+  animations.forEach(sortAnimationKeys);
+
+  // The bar of the motions and the timeline belong to the viewport: they are
+  // shown only when the part has at least one motion.
+  document.body.classList.toggle('has-animations', animations.length > 0);
+
   if (!animations.length) {
     const empty = document.createElement('p');
     empty.className = 'hint';
@@ -5558,19 +6697,37 @@ function renderAnimations() {
     editor.append(animationField('path', animation, 'text', t('anim.path')));
     editor.append(animationField('type', animation, 'select', t('anim.type'), ANIMATION_TYPES));
     editor.append(animationField('axis', animation, 'vector3', t('anim.axis')));
-    editor.append(animationField('speed', animation, 'number', t('anim.speed')));
-    editor.append(animationField('stowed', animation, 'number', t('anim.stowed')));
-    editor.append(animationField('deployed', animation, 'number', t('anim.deployed')));
-    editor.append(animationField('duration', animation, 'number', t('anim.duration')));
+    editor.append(animationField('pivot', animation, 'vector3', t('anim.pivot')));
+    editor.append(animationField('translate', animation, 'bool', t('anim.translate')));
     editor.append(animationField('trigger', animation, 'trigger', t('anim.trigger')));
     editor.append(animationField('foldTrigger', animation, 'trigger', t('anim.foldTrigger')));
     editor.append(animationField('tint', animation, 'color', t('anim.tint')));
     editor.append(animationField('tintAmount', animation, 'number', t('anim.tintAmount')));
     if (animation.type === 'keys') {
-      editor.append(animationKeysEditor(animation, index));
+      // The length of the loop of the motion. The poses of the other types are
+      // the points of the curve, they are edited on the graph.
+      const durationField = animationField('duration', animation, 'number', t('anim.duration'));
+      // The length is written while typing, but the graph and the dope sheet are
+      // rebuilt only when the field is left: a rebuild on every keystroke would
+      // replace the input being typed in.
+      const durationInput = durationField.querySelector('input');
+      if (durationInput) durationInput.addEventListener('change', () => renderAnimations());
+      editor.append(durationField);
     }
+    editor.append(animationDopeSheet(animation, index));
     list.append(editor);
   });
+
+  // The graph editor of the selected motion: the curve of the channel over the
+  // time, the keyframes on it and the playhead. The resizer under it follows.
+  const curve = $('anim-curve');
+  const resizer = $('anim-curve-resizer');
+  if (curve) {
+    const motion = state.animation === null ? null : animations[state.animation];
+    curve.hidden = !motion;
+    if (resizer) resizer.hidden = !motion;
+    if (motion && curveEditor) curveEditor.render();
+  }
 
   applyAnimationPreview();
   updatePreviewUi();
@@ -5659,113 +6816,8 @@ function removeAnimation(index) {
   renderStatus();
 }
 
-// The keys of a motion with keyframes: the list of the keys, the fields of the
-// selected one and the buttons.
-function animationKeysEditor(animation, index) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'anim-keys';
-
-  const list = document.createElement('div');
-  list.className = 'compact-list';
-  const keys = Array.isArray(animation.keys) ? animation.keys : [];
-  keys.forEach((key, keyIndex) => {
-    const row = document.createElement('div');
-    const selected = state.animPreview.key?.track === index && state.animPreview.key?.key === keyIndex;
-    row.className = 'component-row' + (selected ? ' selected' : '');
-
-    const label = document.createElement('span');
-    label.className = 'label';
-    label.textContent = `${(Number(key.time) || 0).toFixed(2)} s → ${(Number(key.angle) || 0).toFixed(1)}°`;
-    row.append(label);
-
-    row.addEventListener('click', () => {
-      state.animPreview.key = { track: index, key: keyIndex };
-      state.animation = index;
-      setPreviewTime(Number(key.time) || 0);
-      renderAnimations();
-    });
-    list.append(row);
-  });
-  wrapper.append(list);
-
-  const selection = selectedAnimationKey();
-  if (selection && selection.track === index) {
-    const time = document.createElement('div');
-    time.className = 'field';
-    const timeLabel = document.createElement('label');
-    timeLabel.textContent = t('anim.keyTime');
-    const timeInput = document.createElement('input');
-    timeInput.type = 'number';
-    timeInput.step = '0.01';
-    timeInput.value = Number(selection.key.time) || 0;
-    timeInput.addEventListener('input', () => {
-      selection.key.time = Number(timeInput.value) || 0;
-      renderAnimations();
-      renderStatus();
-    });
-    time.append(timeLabel, timeInput);
-    wrapper.append(time);
-
-    const angle = document.createElement('div');
-    angle.className = 'field';
-    const angleLabel = document.createElement('label');
-    angleLabel.textContent = t('anim.keyAngle');
-    const angleInput = document.createElement('input');
-    angleInput.type = 'number';
-    angleInput.step = '0.1';
-    angleInput.value = Number(selection.key.angle) || 0;
-    angleInput.addEventListener('input', () => {
-      selection.key.angle = Number(angleInput.value) || 0;
-      applyAnimationPreview();
-      renderAnimations();
-      renderStatus();
-    });
-    angle.append(angleLabel, angleInput);
-    wrapper.append(angle);
-
-    const smooth = document.createElement('label');
-    smooth.className = 'check';
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.checked = selection.key.smooth !== false;
-    box.addEventListener('change', () => {
-      selection.key.smooth = box.checked;
-      renderStatus();
-    });
-    const text = document.createElement('span');
-    text.textContent = t('anim.keySmooth');
-    smooth.append(box, text);
-    wrapper.append(smooth);
-  }
-
-  const buttons = document.createElement('div');
-  buttons.className = 'input-row';
-
-  const add = document.createElement('button');
-  add.className = 'btn small';
-  add.textContent = t('anim.addKey');
-  add.addEventListener('click', () => {
-    const time = state.animPreview.time;
-    addAnimationKey(index, time, sampleAnimationKeys(animation, time));
-  });
-  buttons.append(add);
-
-  const remove = document.createElement('button');
-  remove.className = 'btn small';
-  remove.textContent = t('anim.removeKey');
-  remove.disabled = !selection || selection.track !== index;
-  remove.addEventListener('click', removeAnimationKey);
-  buttons.append(remove);
-
-  wrapper.append(buttons);
-
-  const hint = document.createElement('p');
-  hint.className = 'hint';
-  hint.textContent = t('anim.keysHint');
-  wrapper.append(hint);
-
-  return wrapper;
-}
+// The keys of a motion with keyframes are edited on the graph and in the dope
+// sheet of the motion (see animationDopeSheet).
 
 function animationTriggers() {
   const module = (state.part.modules || {})['Model.PartStateModule'];
@@ -5790,6 +6842,15 @@ function animationField(key, animation, type, label, options) {
     animation[key] = value;
     renderStatus();
   };
+
+  if (type === 'bool') {
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = Boolean(animation[key]);
+    checkbox.addEventListener('change', () => write(checkbox.checked));
+    wrapper.append(checkbox);
+    return wrapper;
+  }
 
   if (type === 'color') {
     const input = document.createElement('input');
@@ -5983,6 +7044,7 @@ $('btn-add-attachment').addEventListener('click', () => {
   state.part.attachments.push(makeAttachment());
   state.selection = { kind: 'attachment', att: state.part.attachments.length - 1 };
   refreshStructure();
+  history.push();
 });
 
 function renderAttachmentList() {
@@ -6105,6 +7167,18 @@ function renderAttachmentEditor() {
     renderStatus();
   };
 
+  // The connection is put onto the mesh: the plane goes to the far end of the
+  // mesh along its direction, the size is the silhouette of the mesh there.
+  const fit = document.createElement('button');
+  fit.className = 'btn small';
+  fit.type = 'button';
+  fit.textContent = t('btn.fitToMesh');
+  fit.addEventListener('click', () => fitAttachmentToMesh(att));
+  const fitRow = document.createElement('div');
+  fitRow.className = 'input-row';
+  fitRow.append(fit);
+  editor.append(fitRow);
+
   const idInput = numberInput(att.id, 1);
   idInput.addEventListener('input', () => {
     att.id = Math.max(0, Math.floor(Number(idInput.value) || 0));
@@ -6211,7 +7285,10 @@ function renderAttachmentEditor() {
 
   const flagsWrap = document.createElement('div');
   flagsWrap.className = 'flags';
-  FLAGS.filter((f) => f !== 'none').forEach((flag) => {
+  // "dynamic" is never offered: a fixed connection with that flag is dropped
+  // when the game detaches it (RocketPart.RemoveDynamicConnection), which looks
+  // like a random hole in the rocket. Surface sockets are their own thing.
+  FLAGS.filter((f) => f !== 'none' && f !== 'dynamic').forEach((flag) => {
     const check = document.createElement('label');
     check.className = 'check';
     const box = document.createElement('input');
@@ -6323,6 +7400,626 @@ function renderSocketEditorValues() {
 }
 
 // ---------------------------------------------------------------------------
+// Dynamic sockets (the surface attachments of the game)
+// ---------------------------------------------------------------------------
+
+// part.json keeps the shapes exactly like the game does, as one string
+// ("single, dual"); the panel works on a list.
+function dynamicShapeNames(text) {
+  const names = [];
+  const raw = typeof text === 'number' ? text : String(text ?? '');
+  if (typeof raw === 'number') {
+    for (const [name, bit] of Object.entries(DYNAMIC_SHAPE_BITS)) {
+      if ((raw & bit) !== 0) names.push(name);
+    }
+    return names;
+  }
+  for (const token of raw.split(/[,|+]+/)) {
+    const name = token.trim().toLowerCase().replace(/[-\s]+/g, '_');
+    if (name && name !== 'none' && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+function dynamicShapeText(names) {
+  return names.filter((name) => name && name !== 'none').join(', ');
+}
+
+// The names the game itself knows: anything else is skipped by the loader.
+function dynamicKnownShapes(text) {
+  return dynamicShapeNames(text).filter((name) => Object.prototype.hasOwnProperty.call(DYNAMIC_SHAPE_BITS, name));
+}
+
+function dynamicUnknownShapes(text) {
+  return dynamicShapeNames(text).filter((name) => !Object.prototype.hasOwnProperty.call(DYNAMIC_SHAPE_BITS, name));
+}
+
+function dynamicPresetOf(defindex) {
+  return DYNAMIC_PRESETS.find((preset) => preset.defindex === Number(defindex)) || null;
+}
+
+function dynamicDirectionLabel(dir) {
+  for (const [name, value] of Object.entries(DYNAMIC_DIRECTIONS)) {
+    if (value.every((v, i) => Math.abs(v - dir[i]) < 1e-4)) return t(`dyn.dir.${name}`);
+  }
+  return `(${dir.map((v) => Math.round(v * 1000) / 1000).join(', ')})`;
+}
+
+function dynamicPresetLabel(preset) {
+  return t('dyn.preset', {
+    role: t(`dyn.role.${preset.role}`),
+    restrict: t(`dyn.restrict.${preset.restrict}`),
+    dir: dynamicDirectionLabel(preset.dir),
+    spread: preset.angle
+      ? t('dyn.band', { a: preset.angle[0], b: preset.angle[1] })
+      : t('dyn.anywhere'),
+  });
+}
+
+function fillDynamicPresetSelect(select, defindex) {
+  select.textContent = '';
+  for (const role of ['parent', 'current']) {
+    const group = document.createElement('optgroup');
+    group.label = t(`dyn.role.${role}`);
+    for (const preset of DYNAMIC_PRESETS.filter((item) => item.role === role)) {
+      const option = document.createElement('option');
+      option.value = String(preset.defindex);
+      option.textContent = dynamicPresetLabel(preset);
+      group.append(option);
+    }
+    if (group.children.length) select.append(group);
+  }
+  select.value = String(defindex);
+  // A defindex the game does not know (an old file, a typo): keep it visible
+  // instead of silently jumping to another socket.
+  if (select.value !== String(defindex)) {
+    const option = document.createElement('option');
+    option.value = String(defindex);
+    option.textContent = t('dyn.unknown', { id: defindex });
+    select.append(option);
+    select.value = String(defindex);
+  }
+}
+
+function dynamicPivotEditor() {
+  const host = $('dynamic-pivot');
+  host.textContent = '';
+  if (!(state.part.dynamicAttachmentConfigs || []).length) return;
+
+  const input = vec3Editor(state.part.dynamicCurrPivot || [0, 0, 0], (next) => {
+    state.part.dynamicCurrPivot = next;
+    renderDynamicProbe();
+    scheduleDynamicView();
+    renderStatus();
+  });
+  const field = fieldElement(t('field.dynamicCurrPivot'), input, t('hint.dynamicCurrPivot'));
+  field.classList.add('dynamic-pivot-field');
+  host.append(field);
+
+  const fromMesh = document.createElement('button');
+  fromMesh.type = 'button';
+  fromMesh.className = 'btn small';
+  fromMesh.textContent = t('btn.pivotFromMesh');
+  fromMesh.addEventListener('click', () => {
+    if (!state.modelObject) {
+      statusLine(t('status.fitNoMesh'), 'warn');
+      return;
+    }
+    const box = new THREE.Box3().setFromObject(state.modelObject);
+    if (box.isEmpty()) {
+      statusLine(t('status.fitNoMesh'), 'warn');
+      return;
+    }
+    const center = box.getCenter(new THREE.Vector3());
+    // The preview already works in metres of the prefab: the model root carries
+    // the units and the extra scale of the part, so the world centre of the
+    // mesh is the part-space point the game wants (nothing else scales it).
+    state.part.dynamicCurrPivot = [center.x, center.y, center.z].map((v) => Math.round(v * 1000) / 1000);
+    dynamicPivotEditor();
+    renderDynamicProbe();
+    scheduleDynamicView();
+    renderStatus();
+    history.push();
+  });
+  const row = document.createElement('div');
+  row.className = 'input-row';
+  row.append(fromMesh);
+  host.append(row);
+}
+
+function renderDynamicList() {
+  const list = $('dynamic-list');
+  list.textContent = '';
+  const entries = state.part.dynamicAttachmentConfigs || [];
+
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = t('empty.dynamic');
+    list.append(empty);
+  }
+
+  entries.forEach((entry, index) => {
+    const preset = dynamicPresetOf(entry.defindex);
+    const color = dynamicColor(index);
+    const row = document.createElement('div');
+    row.className = 'dynamic-row';
+    if (state.dynamicProbe?.index === index) row.classList.add('active');
+
+    const head = document.createElement('div');
+    head.className = 'dynamic-head';
+
+    const role = document.createElement('span');
+    role.className = 'role';
+    role.textContent = preset ? (preset.role === 'parent' ? '+' : '−') : '?';
+    role.title = preset ? t(`dyn.role.${preset.role}`) : t('dyn.unknown', { id: entry.defindex });
+    if (preset) {
+      // The same colour the zones of this socket are drawn in on the model.
+      role.style.color = color;
+      role.style.borderColor = color;
+    }
+
+    const select = document.createElement('select');
+    select.className = 'dynamic-preset';
+    fillDynamicPresetSelect(select, entry.defindex);
+    select.addEventListener('change', () => {
+      entry.defindex = Number(select.value) || 0;
+      renderDynamicList();
+      renderStatus();
+      history.push();
+    });
+
+    const visible = document.createElement('input');
+    visible.type = 'checkbox';
+    visible.className = 'dynamic-visible';
+    visible.checked = !state.dynamicHidden.has(entry);
+    visible.title = t('dyn.showOne');
+    visible.addEventListener('change', () => {
+      if (visible.checked) state.dynamicHidden.delete(entry);
+      else state.dynamicHidden.add(entry);
+      renderDynamicView();
+    });
+
+    const probe = document.createElement('button');
+    probe.type = 'button';
+    probe.className = 'icon-btn';
+    probe.textContent = '◎';
+    probe.title = t('dyn.probe');
+    probe.addEventListener('click', () => {
+      if (state.dynamicProbe?.index === index) {
+        state.dynamicProbe = null;
+      } else {
+        state.dynamicProbe = { index, point: null, normal: null };
+      }
+      renderDynamicList();
+    });
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'icon-btn';
+    remove.textContent = '✕';
+    remove.title = t('title.remove');
+    remove.addEventListener('click', () => {
+      entries.splice(index, 1);
+      if (state.dynamicProbe?.index === index) state.dynamicProbe = null;
+      if (state.dynamicProbe && state.dynamicProbe.index > index) state.dynamicProbe.index -= 1;
+      renderDynamicList();
+      renderStatus();
+      history.push();
+    });
+
+    head.append(role, select, visible, probe, remove);
+    row.append(head);
+
+    // The shapes the socket takes: every one of them is a separate socket in
+    // the game, and it only connects to a fixed connection with a compatible
+    // shape.
+    const shapes = document.createElement('div');
+    shapes.className = 'flags dynamic-shapes';
+    const selected = dynamicShapeNames(entry.shape);
+    for (const shape of DYNAMIC_SHAPES) {
+      const check = document.createElement('label');
+      check.className = 'check';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = selected.includes(shape);
+      box.addEventListener('change', () => {
+        const next = dynamicShapeNames(entry.shape);
+        const at = next.indexOf(shape);
+        if (box.checked && at === -1) next.push(shape);
+        if (!box.checked && at !== -1) next.splice(at, 1);
+        entry.shape = dynamicShapeText(next);
+        renderStatus();
+        renderDynamicProbe();
+        scheduleDynamicView();
+        history.push();
+      });
+      const text = document.createElement('span');
+      text.textContent = shape;
+      check.append(box, text);
+      shapes.append(check);
+    }
+    row.append(shapes);
+    list.append(row);
+  });
+
+  dynamicPivotEditor();
+  renderDynamicProbe();
+  scheduleDynamicView();
+}
+
+$('btn-add-dynamic').addEventListener('click', () => {
+  if (!Array.isArray(state.part.dynamicAttachmentConfigs)) state.part.dynamicAttachmentConfigs = [];
+  // The two ends of a pair are the usual set: a receiving ring socket and the
+  // matching attaching one, then the same for a side socket. A defindex that is
+  // already there is not repeated (the game would create the socket twice).
+  const entries = state.part.dynamicAttachmentConfigs;
+  const used = new Set(entries.map((entry) => Number(entry.defindex)));
+  const defaults = [10001000, -10001000, 30001008, -30001000, 20001000];
+  const defindex = defaults.find((id) => !used.has(id)) ?? 10001000;
+  entries.push({ defindex, shape: 'single' });
+  renderDynamicList();
+  renderStatus();
+  history.push();
+});
+
+// The sockets are drawn on the assembly box of the game (see renderDynamicView);
+// the checkbox hides the whole layer without touching the part.
+$('chk-dynamic-view').addEventListener('change', (event) => {
+  state.dynamicView = event.target.checked;
+  renderDynamicView();
+});
+
+// Restricted copy of the game's math (DynamicAttachment / RocketPart): where
+// the socket may sit, and how it is turned on the surface. The preview of the
+// editor and the game agree because the numbers are the same.
+const DYNAMIC_DEG = Math.PI / 180;
+const AXIS_X = new THREE.Vector3(1, 0, 0);
+const AXIS_Y = new THREE.Vector3(0, 1, 0);
+const AXIS_Z = new THREE.Vector3(0, 0, 1);
+
+function projectOnPlane(vector, planeNormal) {
+  const lengthSq = planeNormal.dot(planeNormal);
+  if (lengthSq < 1e-9) return vector.clone();
+  return vector.clone().addScaledVector(planeNormal, -vector.dot(planeNormal) / lengthSq);
+}
+
+function orientedAngle(u, v, axis) {
+  if (u.lengthSq() < 1e-12 || v.lengthSq() < 1e-12) return 0;
+  const angle = u.angleTo(v);
+  return axis.dot(new THREE.Vector3().crossVectors(u, v)) < 0 ? -angle : angle;
+}
+
+function dynamicRestrictDot(preset) {
+  const angle = preset.angle && (preset.angle[0] || preset.angle[1]) ? preset.angle : [-15, 15];
+  const sign = (value) => (value < 0 ? -1 : 1);
+  return [
+    (1 - Math.cos(angle[0] * DYNAMIC_DEG)) * sign(angle[0]),
+    (1 - Math.cos(angle[1] * DYNAMIC_DEG)) * sign(angle[1]),
+  ];
+}
+
+// RocketPart.SatisfyRestriction
+function dynamicSatisfies(preset, normal) {
+  const dot = dynamicRestrictDot(preset);
+  const direction = new THREE.Vector3(...preset.dir).normalize();
+  const value = direction.dot(normal);
+  if (preset.restrict === 'directional') {
+    return 1 - value < dot[1];
+  }
+  return (value >= dot[0] && value <= dot[1])
+    || Math.abs(dot[0] - value) < 1e-4
+    || Math.abs(dot[1] - value) < 1e-4;
+}
+
+// DynamicAttachment.GetRotation
+function dynamicSocketRotation(preset, normal) {
+  const base = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    preset.rotation[0] * DYNAMIC_DEG,
+    preset.rotation[1] * DYNAMIC_DEG,
+    preset.rotation[2] * DYNAMIC_DEG,
+    'ZXY',
+  ));
+  if (preset.restrict !== 'radial' && preset.restrict !== 'spherical') return base;
+
+  const axis = new THREE.Vector3(...preset.dir).normalize();
+  const up = AXIS_Y.clone().applyQuaternion(base);
+  // Angle(localNormal, axis): the turn of the normal around the restriction axis.
+  const angle = orientedAngle(projectOnPlane(up, axis), projectOnPlane(normal, axis), axis);
+  const rotY = new THREE.Quaternion().setFromAxisAngle(AXIS_Y, angle);
+  const turned = normal.clone().applyQuaternion(rotY.clone().invert());
+  // GetSecondAxis: the axis the normal is told apart by — forward, unless the
+  // restriction axis is the forward or the right one.
+  const isRight = Math.abs(axis.x - 1) < 1e-6 && Math.abs(axis.y) < 1e-6 && Math.abs(axis.z) < 1e-6;
+  const isForward = Math.abs(axis.z - 1) < 1e-6 && Math.abs(axis.y) < 1e-6 && Math.abs(axis.x) < 1e-6;
+  const second = isRight || isForward ? AXIS_Y.clone() : AXIS_Z.clone();
+  const angleZ = orientedAngle(projectOnPlane(up, second), projectOnPlane(turned, second), second);
+  const rotZ = new THREE.Quaternion().setFromAxisAngle(AXIS_Z, angleZ);
+  return rotY.multiply(rotZ.multiply(base));
+}
+
+function dynamicShapeOf(entry) {
+  const names = dynamicShapeNames(entry.shape);
+  return names.find((name) => PRESETS[name]) || 'single';
+}
+
+// One socket drawn at the origin: the ring of the connection in the plane of
+// the surface, the sockets of its shape and the normal it is turned by. The
+// local +Y is the normal of the hull, exactly like DynamicAttachment.GetRotation
+// builds it.
+function buildSocketGlyph(preset, entry, color) {
+  const shape = dynamicShapeOf(entry);
+  const presetShape = PRESETS[shape] || PRESETS.single;
+  const radius = Math.max(presetShape.size[0], presetShape.size[2]) / 2;
+  const group = new THREE.Group();
+
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, Math.max(0.008, radius * 0.03), 8, 48),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false }),
+  );
+  // The ring lies in the plane of the connection, the sockets sit in it.
+  ring.rotation.x = Math.PI / 2;
+  group.add(ring);
+
+  const socketMaterial = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false });
+  for (const socket of presetShape.sockets) {
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(0.02, radius * 0.08), 12, 8),
+      socketMaterial,
+    );
+    sphere.position.set(socket[0], socket[1], socket[2]);
+    group.add(sphere);
+  }
+
+  const arrow = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, radius * 0.8, 0)]),
+    new THREE.LineBasicMaterial({ color }),
+  );
+  group.add(arrow);
+
+  return group;
+}
+
+function renderDynamicProbe() {
+  disposeGroup(dynamicProbeRoot);
+  const probe = state.dynamicProbe;
+  if (!probe) return;
+
+  const entry = (state.part.dynamicAttachmentConfigs || [])[probe.index];
+  const preset = entry ? dynamicPresetOf(entry.defindex) : null;
+  if (!preset) return;
+
+  const normal = new THREE.Vector3(...probe.normal);
+  if (normal.lengthSq() < 1e-9) return;
+  normal.normalize();
+
+  const allowed = dynamicSatisfies(preset, normal);
+  const glyph = buildSocketGlyph(preset, entry, allowed ? 0x46d98a : 0xff6b6b);
+  glyph.position.set(...probe.point);
+  glyph.quaternion.copy(dynamicSocketRotation(preset, normal));
+  dynamicProbeRoot.add(glyph);
+}
+
+// ---------------------------------------------------------------------------
+// Surface sockets on the model
+// ---------------------------------------------------------------------------
+
+// One colour per socket of the part, so the zones on the model match the rows
+// of the panel.
+const DYNAMIC_COLORS = ['#4da3ff', '#ffb14d', '#46d98a', '#ff6bd6', '#9b8cff', '#ff6b6b', '#40d6d6', '#d8d84a'];
+
+function dynamicColor(index) {
+  return DYNAMIC_COLORS[index % DYNAMIC_COLORS.length];
+}
+
+// The box the loader builds as `assembly_physics`: the bounds of the model, with
+// the axes of zero length padded to 0.1 m (PrefabBuilder.NonZero). The skin
+// colliders of the mesh are convex, but the assembly collider of a mod part is
+// this box, so a socket of the game can only land on one of its six faces.
+function assemblyBox() {
+  const root = state.modelObject;
+  if (!root) return null;
+
+  // The exploded view must not move the box: the game builds the collider once,
+  // from the mesh in its rest pose.
+  const children = root.children;
+  const saved = children.map((child) => child.position.clone());
+  if (state.explodeRest && state.explodeRest.length === children.length) {
+    children.forEach((child, index) => child.position.copy(state.explodeRest[index]));
+  }
+  root.updateWorldMatrix(true, true);
+  const box = new THREE.Box3().setFromObject(root);
+  children.forEach((child, index) => child.position.copy(saved[index]));
+  root.updateWorldMatrix(true, true);
+
+  if (box.isEmpty()) return null;
+  const center = box.getCenter(new THREE.Vector3());
+  const min = box.min.clone();
+  const max = box.max.clone();
+  for (const axis of ['x', 'y', 'z']) {
+    if (max[axis] - min[axis] < 0.1) {
+      min[axis] = center[axis] - 0.05;
+      max[axis] = center[axis] + 0.05;
+    }
+  }
+  return new THREE.Box3(min, max);
+}
+
+// The six faces of the box: the normal is what the restriction of the game is
+// checked against, and the plane the sockets sit in is the face itself.
+function assemblyFaces(box) {
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const list = [
+    { normal: new THREE.Vector3(0, 1, 0), point: new THREE.Vector3(center.x, box.max.y, center.z), w: size.x, h: size.z },
+    { normal: new THREE.Vector3(0, -1, 0), point: new THREE.Vector3(center.x, box.min.y, center.z), w: size.x, h: size.z },
+    { normal: new THREE.Vector3(0, 0, 1), point: new THREE.Vector3(center.x, center.y, box.max.z), w: size.x, h: size.y },
+    { normal: new THREE.Vector3(0, 0, -1), point: new THREE.Vector3(center.x, center.y, box.min.z), w: size.x, h: size.y },
+    { normal: new THREE.Vector3(1, 0, 0), point: new THREE.Vector3(box.max.x, center.y, center.z), w: size.z, h: size.y },
+    { normal: new THREE.Vector3(-1, 0, 0), point: new THREE.Vector3(box.min.x, center.y, center.z), w: size.z, h: size.y },
+  ];
+  const forward = new THREE.Vector3(0, 0, 1);
+  for (const face of list) {
+    face.quaternion = new THREE.Quaternion().setFromUnitVectors(forward, face.normal);
+  }
+  return list;
+}
+
+// Paints one face of the assembly box: the surface of a socket is the set of the
+// faces its restriction allows (the normal of the rest is the same on the whole
+// face).
+function paintDynamicFace(face, color) {
+  const geometry = new THREE.PlaneGeometry(face.w, face.h);
+  const quad = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.16,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }));
+  quad.position.copy(face.point).addScaledVector(face.normal, 0.004);
+  quad.quaternion.copy(face.quaternion);
+  dynamicViewRoot.add(quad);
+
+  const border = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.7, depthWrite: false }),
+  );
+  border.position.copy(quad.position);
+  border.quaternion.copy(quad.quaternion);
+  dynamicViewRoot.add(border);
+}
+
+function clearDynamicView() {
+  disposeGroup(dynamicViewRoot);
+}
+
+// Draws the sockets on the part: the box the game probes, the faces a socket can
+// use, a glyph of the socket on every allowed face, and the aim point of the
+// sockets that attach to another hull. The rebuild is coalesced into one run per
+// task: a single change (a mesh load, a row of the panel) often touches several
+// fields, and a timer would be throttled in a background tab.
+let dynamicViewPending = false;
+
+function scheduleDynamicView() {
+  if (dynamicViewPending) return;
+  dynamicViewPending = true;
+  queueMicrotask(() => {
+    dynamicViewPending = false;
+    renderDynamicView();
+  });
+}
+
+function renderDynamicView() {
+  clearDynamicView();
+  const entries = state.part.dynamicAttachmentConfigs || [];
+  if (!state.dynamicView || !state.modelObject || !entries.length) return;
+
+  const box = assemblyBox();
+  if (!box) return;
+
+  // The assembly collider itself, so the author sees what the game probes and
+  // why a socket can only sit on a face of it.
+  const size = box.getSize(new THREE.Vector3());
+  const frame = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z)),
+    new THREE.LineBasicMaterial({ color: 0x7f8da3, transparent: true, opacity: 0.55, depthWrite: false }),
+  );
+  frame.position.copy(box.getCenter(new THREE.Vector3()));
+  dynamicViewRoot.add(frame);
+
+  const faces = assemblyFaces(box);
+  entries.forEach((entry, index) => {
+    if (state.dynamicHidden.has(entry)) return;
+    const preset = dynamicPresetOf(entry.defindex);
+    if (!preset) return;
+
+    const color = new THREE.Color(dynamicColor(index));
+    const shape = PRESETS[dynamicShapeOf(entry)] || PRESETS.single;
+    const socketRadius = Math.max(shape.size[0], shape.size[2]) / 2;
+    for (const face of faces) {
+      if (!dynamicSatisfies(preset, face.normal)) continue;
+      paintDynamicFace(face, color);
+      const glyph = buildSocketGlyph(preset, entry, color.getHex());
+      // The glyph shows the orientation, not the size: a socket wider than its
+      // face would hide the part itself.
+      const limit = Math.min(face.w, face.h) * 0.22;
+      if (socketRadius > limit && socketRadius > 0) glyph.scale.setScalar(limit / socketRadius);
+      glyph.position.copy(face.point).addScaledVector(face.normal, 0.006);
+      glyph.quaternion.copy(dynamicSocketRotation(preset, face.normal));
+      dynamicViewRoot.add(glyph);
+    }
+  });
+
+  // The point the game aims at to stick the part onto another hull
+  // (AssemblyShopPlacer.RaycastCurrent): a socket that attaches to a hull is
+  // useless while it points outside the mesh, so it is drawn even when the part
+  // has no sockets that attach.
+  const pivot = state.part.dynamicCurrPivot;
+  if (Array.isArray(pivot) && entries.some((entry) => (dynamicPresetOf(entry.defindex)?.role === 'current'))) {
+    const point = new THREE.Vector3(Number(pivot[0]) || 0, Number(pivot[1]) || 0, Number(pivot[2]) || 0);
+    const marker = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.035),
+      new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.95, depthWrite: false }),
+    );
+    marker.position.copy(point);
+    dynamicViewRoot.add(marker);
+    for (const [axis, colorHex] of [[AXIS_X, 0xff6b6b], [AXIS_Y, 0x46d98a], [AXIS_Z, 0x4da3ff]]) {
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([point.clone(), point.clone().addScaledVector(axis, 0.12)]),
+        new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity: 0.85, depthWrite: false }),
+      );
+      dynamicViewRoot.add(line);
+    }
+  }
+}
+
+function updateDynamicProbe(event) {
+  const probe = state.dynamicProbe;
+  if (!probe || !state.modelObject) return;
+  pointerNdc(event);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObject(modelRoot, true);
+  if (!hits.length) {
+    // Off the hull there is nothing the game could snap to.
+    if (probe.point) {
+      probe.point = null;
+      probe.normal = null;
+      renderDynamicProbe();
+    }
+    return;
+  }
+
+  const hit = hits[0];
+  // The preview lives in metres of the prefab (the model root carries the units
+  // and the extra scale), and dynamicCurrPivot is in that same space.
+  const point = hit.point.clone();
+  let normal;
+  if (hit.face) {
+    normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+  } else {
+    normal = new THREE.Vector3(0, 1, 0);
+  }
+  normal.normalize();
+
+  probe.point = [point.x, point.y, point.z];
+  probe.normal = [normal.x, normal.y, normal.z];
+  renderDynamicProbe();
+}
+
+canvas.addEventListener('pointermove', (event) => {
+  if (state.dynamicProbe) updateDynamicProbe(event);
+});
+
+canvas.addEventListener('pointerleave', () => {
+  const probe = state.dynamicProbe;
+  if (!probe) return;
+  probe.point = null;
+  probe.normal = null;
+  renderDynamicProbe();
+});
+
+// ---------------------------------------------------------------------------
 // Cable attachments
 // ---------------------------------------------------------------------------
 
@@ -6427,6 +8124,7 @@ function validate() {
 
     for (const flag of att.flags || []) {
       if (!FLAGS.includes(flag)) errors.push(t('msg.flags', { i: n, flag }));
+      else if (flag === 'dynamic') warnings.push(t('msg.dynamicFlag', { i: n }));
     }
 
     (att.sockets || []).forEach((socket, s) => {
@@ -6439,6 +8137,32 @@ function validate() {
       seenSockets.add(key);
     });
   });
+
+  // Surface sockets: only the configs the game knows mean anything (the game
+  // looks the defindex up in its own cache without a check), and a socket
+  // without a shape is not used either.
+  (part.dynamicAttachmentConfigs || []).forEach((entry, index) => {
+    const n = index + 1;
+    if (!dynamicPresetOf(entry.defindex)) warnings.push(t('msg.dynamicUnknown', { i: n, id: entry.defindex }));
+    if (!dynamicKnownShapes(entry.shape).length) {
+      warnings.push(t('msg.dynamicShape', { i: n }));
+    } else if (dynamicUnknownShapes(entry.shape).length) {
+      warnings.push(t('msg.dynamicShapeName', { i: n, names: dynamicUnknownShapes(entry.shape).join(', ') }));
+    }
+  });
+
+  // The pivot is the point inside the hull the game aims at when this part is
+  // put onto another one.
+  const needsPivot = (part.dynamicAttachmentConfigs || [])
+    .some((entry) => dynamicPresetOf(entry.defindex)?.role === 'current');
+  const bounds = needsPivot ? modelBounds() : null;
+  const pivot = part.dynamicCurrPivot;
+  if (bounds && pivot && pivot.some((v) => Number(v))) {
+    const outside = pivot.some((value, axis) => (
+      Number(value) < bounds.min[axis] - 1e-3 || Number(value) > bounds.max[axis] + 1e-3
+    ));
+    if (outside) warnings.push(t('msg.dynamicPivot'));
+  }
 
   if (!part.model || !part.model.trim()) {
     errors.push(t('msg.required', { field: t('field.model') }));
@@ -6486,6 +8210,16 @@ function validate() {
     }
     if (animation.type === 'deploy' && !(Number(animation.duration) > 0)) {
       errors.push(t('msg.animationDuration', { i: n }));
+    }
+    // The game only announces the transitions of Model.PartStateModule: a trigger
+    // that is not there never fires, and the motion waits in its first pose.
+    // (The same name in both fields is fine: one transition then toggles it.)
+    for (const name of new Set([animation.trigger, animation.foldTrigger].filter(Boolean))) {
+      if (!(part.modules || {})['Model.PartStateModule']) {
+        warnings.push(t('msg.animNoState', { i: n, trigger: name }));
+      } else if (!animationTriggers().some((item) => item.toLowerCase() === name.toLowerCase())) {
+        warnings.push(t('msg.animUnknownTrigger', { i: n, trigger: name }));
+      }
     }
     if (nodePaths.length && !animation.path.startsWith('model/')) {
       warnings.push(t('msg.animationModelPath', { i: n }));
@@ -6600,9 +8334,21 @@ function normalizePart(raw) {
     state: variant.state && typeof variant.state === 'object' ? variant.state : {},
   }));
   part.centerOfMassAdjustment = toVec3(raw.centerOfMassAdjustment, [0, 0, 0]);
+  // -1 is "keep the snapping the player chose" and it is what the stock parts
+  // mostly use, so it is the default of the editor too.
+  part.radialSnapping = raw.radialSnapping === undefined ? -1 : Number(raw.radialSnapping);
+  // part.json may carry the shapes as one string or as the numeric mask of the
+  // game's enum; the panel and the export work on names.
+  part.dynamicAttachmentConfigs = (raw.dynamicAttachmentConfigs || []).map((entry) => ({
+    defindex: Number(entry.defindex) || 0,
+    shape: typeof entry.shape === 'number'
+      ? dynamicShapeText(dynamicShapeNames(entry.shape))
+      : String(entry.shape ?? ''),
+  }));
+  part.dynamicCurrPivot = toVec3(raw.dynamicCurrPivot, [0, 0, 0]);
   part.animations = (raw.animations || []).map((animation) => ({
     path: animation.path || '',
-    type: animation.type === 'deploy' ? 'deploy' : 'spin',
+    type: ['spin', 'deploy', 'keys'].includes(animation.type) ? animation.type : 'spin',
     axis: toVec3(animation.axis, [0, 1, 0]),
     speed: Number(animation.speed) || 0,
     stowed: Number(animation.stowed) || 0,
@@ -6612,8 +8358,50 @@ function normalizePart(raw) {
     foldTrigger: animation.foldTrigger || '',
     tint: animation.tint || '',
     tintAmount: animation.tintAmount === undefined ? 1 : Number(animation.tintAmount),
+    // A motion can move the node along the axis instead of turning it; the
+    // keys travel with the motion (they were lost on import before).
+    translate: Boolean(animation.translate),
+    keys: (Array.isArray(animation.keys) ? animation.keys : [])
+      .map((key) => ({
+        time: Number(key.time) || 0,
+        angle: Number(key.angle) || 0,
+        smooth: key.smooth !== false,
+      }))
+      // The game samples the curve in the order of the list.
+      .sort((a, b) => a.time - b.time),
   }));
+  fillMissingStates(part);
   return part;
+}
+
+// The game creates the modules of a part by walking its state: a module
+// without an entry there is never created and the part behaves as if the
+// module was not there at all. The stock defaults are filled in here, so the
+// exported part.json is complete without the author writing them by hand
+// (the loader does the same when the game loads the part).
+//
+// The modules whose entry was filled are remembered: the panel of the modules
+// shows them, so the author sees what the game will do.
+const filledStateModules = new Set();
+
+function fillMissingStates(part) {
+  const modules = part.modules;
+  if (!modules || typeof modules !== 'object') return;
+  const config = part.state && typeof part.state === 'object' ? part.state : (part.state = {});
+  for (const name of Object.keys(modules)) {
+    if (config[name]) continue;
+    const defaults = STATE_DEFAULTS[name];
+    if (!defaults) continue;
+    const entry = structuredClone(defaults);
+    // -1 stands for "the full amount of the module" (the stock tanks fill
+    // their state with the maxAmount of the config).
+    if (entry.amount === -1) {
+      const module = modules[name] || {};
+      entry.amount = Number(module.maxAmount) || Number(module.amount) || 0;
+    }
+    config[name] = entry;
+    filledStateModules.add(name);
+  }
 }
 
 function fillForm() {
@@ -6646,7 +8434,7 @@ function fillForm() {
   $('f-mask').value = part.material.mask || '';
   updateTextureButtons();
   $('f-explode').value = 0;
-  $('f-radial').value = part.radialSnapping ?? 0;
+  $('f-radial').value = part.radialSnapping ?? -1;
   COM.forEach((input, axis) => {
     input.value = part.centerOfMassAdjustment?.[axis] ?? 0;
   });
@@ -6759,7 +8547,30 @@ function toJson(part) {
   if (part.centerOfMassAdjustment?.some((v) => v)) {
     json.centerOfMassAdjustment = cleanVector(part.centerOfMassAdjustment, [0, 0, 0]);
   }
-  if (part.radialSnapping) json.radialSnapping = part.radialSnapping;
+  // -1 is the default of the game (keep the player's setting), so only a real
+  // value goes into the file.
+  if (Number(part.radialSnapping) >= 0) json.radialSnapping = Number(part.radialSnapping);
+
+  // Surface sockets: only the entries with a config and a shape mean anything
+  // to the game, and the pivot is read only if there is a socket at all. Two
+  // entries of the same config are merged (the game would create the socket
+  // twice), exactly like the loader merges them.
+  const dynamicMerged = new Map();
+  for (const entry of part.dynamicAttachmentConfigs || []) {
+    const defindex = Number(entry.defindex) || 0;
+    const names = dynamicKnownShapes(entry.shape);
+    if (!names.length) continue;
+    const previous = dynamicMerged.get(defindex) || [];
+    dynamicMerged.set(defindex, [...new Set([...previous, ...names])]);
+  }
+  const dynamicConfigs = [...dynamicMerged.entries()]
+    .map(([defindex, names]) => ({ defindex, shape: dynamicShapeText(names) }));
+  if (dynamicConfigs.length) {
+    json.dynamicAttachmentConfigs = dynamicConfigs;
+    if (part.dynamicCurrPivot?.some((v) => Number(v))) {
+      json.dynamicCurrPivot = cleanVector(part.dynamicCurrPivot, [0, 0, 0]);
+    }
+  }
   for (const key of ['modules', 'state', 'overrides']) {
     if (part[key] && Object.keys(part[key]).length) json[key] = part[key];
   }
@@ -6788,6 +8599,7 @@ function toJson(part) {
       }
       if (animation.trigger) out.trigger = animation.trigger;
       if (animation.foldTrigger) out.foldTrigger = animation.foldTrigger;
+      if (animation.translate) out.translate = true;
       if (animation.tint) {
         out.tint = animation.tint;
         out.tintAmount = animation.tintAmount ?? 1;
@@ -6872,6 +8684,7 @@ $('file-json').addEventListener('change', async () => {
 });
 
 function loadPart(raw, fileName) {
+  resetPreviewForPart();
   state.part = normalizePart(raw);
   state.selection = null;
   state.component = null;
@@ -6879,12 +8692,21 @@ function loadPart(raw, fileName) {
   clearPreviewTextures();
   $('drop-hint').style.display = '';
   fillForm();
+  // The preview takes the flame of the engine of the new part at once.
+  showEngineFlamePreview();
+  applyEngineFlame();
   refreshStructure();
+  history.reset();
   statusLine(t('status.imported', { name: fileName || state.part.id }), 'ok');
 }
 
+// A new part: the skeleton of the category that is chosen in the form. The
+// modules, the state and the connections of that category are already there,
+// the author only has to fill in the numbers and the mesh.
 $('btn-new').addEventListener('click', () => {
-  state.part = defaultPart();
+  const category = $('f-category').value || 'structure';
+  resetPreviewForPart();
+  state.part = templateFor(category);
   state.selection = null;
   state.component = null;
   disposeModel();
@@ -6893,6 +8715,8 @@ $('btn-new').addEventListener('click', () => {
   $('drop-hint').style.display = '';
   fillForm();
   refreshStructure();
+  history.reset();
+  statusLine(t('status.newPart', { category }), 'ok');
 });
 
 function populateExamples() {
@@ -7099,6 +8923,7 @@ function refreshStructure() {
   renderAttachmentList();
   renderAttachmentEditor();
   renderCables();
+  renderDynamicList();
   renderComponents();
   renderAnimations();
   renderNodeMaterials();
@@ -7115,6 +8940,42 @@ function refreshStructure() {
   renderStatus();
 }
 
+// The open sections of the panels stay open after a reload: a part has a lot
+// of fields, and the author works with a few sections at a time.
+const SECTIONS_KEY = 'partadder.editor.sections';
+
+function sectionKey(section) {
+  const heading = section.querySelector('summary h2') || section.querySelector('summary');
+  return heading ? heading.dataset.i18n : null;
+}
+
+function initSections() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(SECTIONS_KEY) || 'null');
+  } catch (error) {
+    saved = null;
+  }
+
+  for (const section of document.querySelectorAll('.panel details.group')) {
+    const key = sectionKey(section);
+    if (key && saved && typeof saved[key] === 'boolean') section.open = saved[key];
+
+    section.addEventListener('toggle', () => {
+      const state = {};
+      for (const item of document.querySelectorAll('.panel details.group')) {
+        const name = sectionKey(item);
+        if (name) state[name] = item.open;
+      }
+      try {
+        localStorage.setItem(SECTIONS_KEY, JSON.stringify(state));
+      } catch (error) {
+        // Without storage the sections just do not persist.
+      }
+    });
+  }
+}
+
 function init() {
   const saved = localStorage.getItem('partadder.editor.lang');
   const initial = saved === 'ru' ? 'ru' : 'en';
@@ -7126,12 +8987,32 @@ function init() {
   populateAnimationNodes();
   populateNodeMaterialSelect();
   populateStockSelect().catch(() => {});
+  fillDensitySelect();
   loadLibrary();
   initTimeline();
+  initCurveEditor();
+  bindCurveResizer();
+  loadCurveHeight();
   initFlameCurve();
+  initSections();
   $('lang-select').addEventListener('change', () => {
     localStorage.setItem('partadder.editor.lang', getLang());
+    fillDensitySelect();
   });
+
+  // The schema of part.json: the loader checks the same rules, so the editor can
+  // show what the game would refuse.
+  loadSchema()
+    .then((schema) => {
+      state.schema = schema;
+      renderStatus();
+    })
+    .catch(() => {
+      // The editor works without it, the loader does not need it either.
+    });
+
+  // The draft of the last session comes back, when there is one.
+  const drafted = restoreDraft();
 
   fillForm();
   loadPanelSizes();
@@ -7141,6 +9022,16 @@ function init() {
   onResize();
   refreshStructure();
   fitView();
+  history.reset();
+  updateHistoryButtons();
+
+  if (drafted) {
+    // A moment later, so the message is not overwritten by the status line of
+    // the validation.
+    setTimeout(() => {
+      statusLine(t('status.draftRestored', { name: state.part.name || state.part.id }), 'ok');
+    }, 500);
+  }
 
   renderer.setAnimationLoop(() => {
     tickAnimationPreview();
@@ -7149,5 +9040,9 @@ function init() {
     renderer.render(scene, camera);
   });
 }
+
+$('btn-undo')?.addEventListener('click', () => history.undo());
+$('btn-redo')?.addEventListener('click', () => history.redo());
+$('btn-mass-from-mesh')?.addEventListener('click', massFromMesh);
 
 init();

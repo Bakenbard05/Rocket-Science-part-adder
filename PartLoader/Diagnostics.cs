@@ -20,12 +20,16 @@ namespace PartRotatorExtension.PartLoader
 
         internal static string LogFilePath;
 
-        internal static void Reset(string logFilePath)
+        /// <summary>True when the log file keeps what it had (a reload of the parts).</summary>
+        internal static bool AppendLog { get; private set; }
+
+        internal static void Reset(string logFilePath, bool append = false)
         {
             Errors.Clear();
             Warnings.Clear();
             Lines.Clear();
             LogFilePath = logFilePath;
+            AppendLog = append;
         }
 
         internal static void Info(string message)
@@ -44,6 +48,32 @@ namespace PartRotatorExtension.PartLoader
             }
 
             Info(message);
+        }
+
+        /// <summary>
+        /// A line written after the load has finished (the driver of the particle
+        /// effects works at runtime): it goes into the log file at once, because
+        /// Flush runs only once per load.
+        /// </summary>
+        internal static void Live(string message)
+        {
+            string line = Prefix + message;
+            Lines.Add(line);
+            try { Log.Info(line); } catch { }
+
+            if (string.IsNullOrEmpty(LogFilePath))
+            {
+                return;
+            }
+
+            try
+            {
+                File.AppendAllText(LogFilePath, line + Environment.NewLine, Encoding.UTF8);
+            }
+            catch (Exception)
+            {
+                // A locked log file must not break the effect.
+            }
         }
 
         internal static void Warn(string message)
@@ -71,7 +101,7 @@ namespace PartRotatorExtension.PartLoader
             try { Log.Exception(line, exception); } catch { }
         }
 
-        internal static void Flush(int packs, int loaded, int failed)
+        internal static void Flush(int packs, int loaded, int failed, bool append = false)
         {
             if (string.IsNullOrEmpty(LogFilePath))
             {
@@ -89,7 +119,15 @@ namespace PartRotatorExtension.PartLoader
                     builder.AppendLine(line);
                 }
 
-                File.WriteAllText(LogFilePath, builder.ToString(), Encoding.UTF8);
+                if (append)
+                {
+                    // A reload writes its lines under the ones of the first load.
+                    File.AppendAllText(LogFilePath, Environment.NewLine + builder.ToString(), Encoding.UTF8);
+                }
+                else
+                {
+                    File.WriteAllText(LogFilePath, builder.ToString(), Encoding.UTF8);
+                }
             }
             catch (Exception e)
             {

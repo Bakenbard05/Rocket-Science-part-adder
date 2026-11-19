@@ -12,6 +12,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# The schema of part.json lives in the docs folder of the repository: the editor
+# reads it from /docs/part.schema.json, the loader has it in the DLL.
+$docs = Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'docs'
 $prefix = "http://localhost:$Port/"
 
 $listener = [System.Net.HttpListener]::new()
@@ -59,8 +62,16 @@ while ($listener.IsListening) {
         $relative = [Uri]::UnescapeDataString($request.Url.AbsolutePath).TrimStart('/')
         if ([string]::IsNullOrWhiteSpace($relative)) { $relative = 'index.html' }
         $relative = $relative -replace '/', [System.IO.Path]::DirectorySeparatorChar
-        $full = [System.IO.Path]::GetFullPath((Join-Path $root $relative))
-        $rootFull = [System.IO.Path]::GetFullPath($root)
+
+        # The docs folder of the repository is served under /docs/.
+        $base = $root
+        if ($relative.StartsWith('docs' + [System.IO.Path]::DirectorySeparatorChar)) {
+            $base = $docs
+            $relative = $relative.Substring('docs'.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar)
+        }
+
+        $full = [System.IO.Path]::GetFullPath((Join-Path $base $relative))
+        $rootFull = [System.IO.Path]::GetFullPath($base)
 
         if (-not $full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
             $response.StatusCode = 403

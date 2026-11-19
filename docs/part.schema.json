@@ -5,7 +5,7 @@
   "description": "Describes one custom part. Paths are relative to the folder that contains this file.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["category", "mass", "model", "attachments"],
+  "required": ["category", "model", "attachments"],
   "properties": {
     "$schema": {
       "type": "string",
@@ -40,7 +40,7 @@
     "mass": {
       "type": "number",
       "exclusiveMinimum": 0,
-      "description": "Mass in kg."
+      "description": "Mass in kg. Without it the loader computes the mass from the volume of the mesh (1000 kg/m3)."
     },
     "tags": {
       "type": "array",
@@ -109,9 +109,19 @@
     },
     "radialSnapping": {
       "type": "number",
-      "minimum": 0,
-      "default": 0,
-      "description": "Radial symmetry step in degrees; 0 disables radial snapping."
+      "minimum": -1,
+      "default": -1,
+      "description": "Radial symmetry step in degrees while the part is placed; 0 disables radial snapping and -1 (the default) keeps the setting of the player."
+    },
+    "dynamicAttachmentConfigs": {
+      "type": "array",
+      "description": "Surface sockets: the part receives other parts on its hull and/or can be attached to the hull of another part. Every entry names a config of the game; its sign says which end it is (see docs/PART_FORMAT.md). An entry the loader cannot use is dropped with a warning, so the rest of the part still loads.",
+      "items": { "$ref": "#/definitions/dynamicAttachment" }
+    },
+    "dynamicCurrPivot": {
+      "$ref": "#/definitions/vector3",
+      "default": [0, 0, 0],
+      "description": "Point inside the hull of the part the game aims the surface socket at when this part is placed on another one. The origin (inside the mesh) suits most parts."
     },
     "modules": {
       "type": "object",
@@ -154,14 +164,30 @@
         "required": ["path"],
         "properties": {
           "path": { "type": "string", "description": "Node of the model, for example model/antenna_y." },
-          "type": { "type": "string", "enum": ["spin", "deploy"] },
+          "type": { "type": "string", "enum": ["spin", "deploy", "keys"] },
           "axis": { "$ref": "#/definitions/vector3" },
-          "speed": { "type": "number", "description": "Degrees per second (spin)." },
-          "stowed": { "type": "number", "description": "Angle of the stowed pose (deploy)." },
-          "deployed": { "type": "number", "description": "Angle of the deployed pose (deploy)." },
-          "duration": { "type": "number", "description": "Duration of the pose change in seconds (deploy)." },
-          "trigger": { "type": "string", "description": "Part state trigger that starts the deploy." },
-          "foldTrigger": { "type": "string", "description": "Part state trigger that folds the node back. Without it every other transition folds the node back." },
+          "speed": { "type": "number", "description": "Degrees per second (spin), or metres per second with translate." },
+          "stowed": { "type": "number", "description": "Angle of the stowed pose (deploy), or offset in metres with translate." },
+          "deployed": { "type": "number", "description": "Angle of the deployed pose (deploy), or offset in metres with translate." },
+          "duration": { "type": "number", "description": "Duration of the pose change in seconds (deploy), or of the loop (keys); a keyed curve with a trigger plays once over this time." },
+          "trigger": { "type": "string", "description": "Part state trigger that starts the motion (a deploy, or a one-shot curve with keys); it must be in the triggersData of Model.PartStateModule." },
+          "foldTrigger": { "type": "string", "description": "Part state trigger that folds the node back. Without it every other transition folds the node back; the same name as trigger makes the transition a toggle." },
+          "translate": { "type": "boolean", "description": "The motion moves the node along the axis instead of turning it: the numbers are metres." },
+          "pivot": { "$ref": "#/definitions/vector3", "description": "The point the node turns around, in the space of the node. Zero turns it around its own origin." },
+          "keys": {
+            "type": "array",
+            "description": "Keyframes of the motion (keys): the angle (or offset, with translate) over the time.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["time", "angle"],
+              "properties": {
+                "time": { "type": "number", "description": "Time of the key in seconds." },
+                "angle": { "type": "number", "description": "Angle in degrees, or offset in metres with translate." },
+                "smooth": { "type": "boolean", "description": "True (the default) interpolates the segment smoothly, false linearly." }
+              }
+            }
+          },
           "tint": { "$ref": "#/definitions/color", "description": "Colour the part is tinted to when the trigger fires." },
           "tintAmount": { "type": "number", "minimum": 0, "maximum": 1, "description": "Strength of the tint." }
         }
@@ -347,6 +373,21 @@
         "id": { "type": "integer", "minimum": 0, "description": "Defaults to the array index." },
         "name": { "type": "string" },
         "position": { "$ref": "#/definitions/vector3", "default": [0, 0, 0] }
+      }
+    },
+    "dynamicAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defindex": {
+          "type": "integer",
+          "description": "Id of a dynamic attachment config of the game. A positive id makes the part receive a part on its surface (10001000..10001003, 10001100..10001105, 20001000, 20001100, 30001000..30001018, 30001100..30001129), a negative one lets this part be put onto a surface (-10001000, -10001102..-10001105, -30001000..-30001018). See docs/PART_FORMAT.md."
+        },
+        "shape": {
+          "type": "string",
+          "default": "single",
+          "description": "Connection shapes of the socket, combinable with commas: for example \"single, dual\". The socket only connects to a fixed connection of another part with a compatible shape."
+        }
       }
     }
   }

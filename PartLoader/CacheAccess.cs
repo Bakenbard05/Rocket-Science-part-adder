@@ -182,5 +182,44 @@ namespace PartRotatorExtension.PartLoader
 
             return !string.IsNullOrEmpty(name) && sounds.ContainsKey(name) && sounds[name] != null;
         }
+
+        /// <summary>
+        /// Says if the game knows a vfx of a <c>Model.ContinuousEffectModule</c>
+        /// (the plumes of the RCS thrusters). The vfx cache of the game is not
+        /// typed here, so its dictionary is looked up by shape: string keys,
+        /// VisualEffect values. A null result means the cache could not be read.
+        /// </summary>
+        internal static bool? HasVfx(string name)
+        {
+            object cache = CacheStore.vfx;
+            if (cache == null)
+            {
+                return null;
+            }
+
+            FieldInfo[] fields = cache.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            for (int i = 0; i < fields.Length; i++)
+            {
+                if (fields[i].FieldType.Name != "Dictionary`2")
+                {
+                    continue;
+                }
+
+                Type[] arguments = fields[i].FieldType.GetGenericArguments();
+                if (arguments.Length != 2 || arguments[0] != typeof(string) ||
+                    arguments[1].Name != "VisualEffect")
+                {
+                    continue;
+                }
+
+                if (fields[i].GetValue(cache) is System.Collections.IDictionary dictionary &&
+                    name != null)
+                {
+                    return dictionary.Contains(name);
+                }
+            }
+
+            return null;
+        }
     }
 }

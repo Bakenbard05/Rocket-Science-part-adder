@@ -37,6 +37,11 @@ export const ENGINE_SOUNDS = [
   'spacecraft_05_powerful_burn_mono',
 ];
 
+// The vfx of the RCS thrusters: the two VisualEffect assets the stock parts
+// name in Model.ContinuousEffectModule (ModuleContinuousVFX looks them up in
+// the vfx cache of the game).
+export const RCS_VFX = ['rcs_0', 'rcs_1'];
+
 export const ENGINE_FLAMES = [
   'engine_0_flame',
   'engine_1_flame',
@@ -161,9 +166,13 @@ export const COMPONENTS = [
       { path: 'range', label: { en: 'Range, degrees', ru: 'Диапазон, градусы' }, type: 'number', default: 3 },
       {
         path: 'combustionChambers',
-        label: { en: 'Combustion chambers', ru: 'Камеры сгорания' },
-        type: 'strings',
-        default: ['model/engine_1/combustion_chamber'],
+        label: { en: 'Nozzles (nodes that turn)', ru: 'Сопла (узлы, которые качаются)' },
+        type: 'nodes',
+        default: [],
+        hint: {
+          en: 'The node has to be a separate object of the mesh with its origin at the hinge, otherwise the nozzle swings around the wrong point',
+          ru: 'Узел должен быть отдельным объектом меша, а его начало — на оси качания, иначе сопло будет ходить вокруг не той точки',
+        },
       },
     ],
     state: [],
@@ -506,7 +515,16 @@ export const COMPONENTS = [
     key: 'Model.ResourceSeparatorModule',
     group: 'structure',
     label: { en: 'Resource separator', ru: 'Разделитель ресурсов' },
-    config: [{ path: 'detachConnIds', label: { en: 'Detached connections', ru: 'Отсоединяемые соединения' }, type: 'numbers', default: [1] }],
+    config: [{
+      path: 'detachConnIds',
+      label: { en: 'Detached connections', ru: 'Отсоединяемые соединения' },
+      type: 'numbers',
+      default: [],
+      hint: {
+        en: 'Ids of the attachments of this part that break off (0, 1…) — the game throws when an id is not a connection of the part',
+        ru: 'Id креплений этой детали, которые отсоединяются (0, 1…) — игра падает, если такого крепления у детали нет',
+      },
+    }],
     state: [{ path: 'passResources', label: { en: 'Pass resources', ru: 'Передавать ресурсы' }, type: 'bool', default: false }],
   },
   {
@@ -671,10 +689,12 @@ export const COMPONENTS = [
   {
     key: 'Model.ContinuousEffectModule',
     group: 'misc',
-    label: { en: 'Continuous effect', ru: 'Постоянный эффект' },
+    label: { en: 'Continuous effect (RCS)', ru: 'Постоянный эффект (RCS)' },
     config: [
-      { path: 'sound', label: { en: 'Sound', ru: 'Звук' }, type: 'text', default: 'rcs_micro' },
-      { path: 'vfx', label: { en: 'VFX', ru: 'Эффект' }, type: 'text', default: 'rcs_0' },
+      { path: 'sound', label: { en: 'Sound', ru: 'Звук' }, type: 'enum', options: ['', ...ENGINE_SOUNDS], default: 'rcs_micro' },
+      { path: 'startSound', label: { en: 'Start sound', ru: 'Звук запуска' }, type: 'enum', options: ['', ...ENGINE_SOUNDS], default: '' },
+      { path: 'endSound', label: { en: 'Stop sound', ru: 'Звук остановки' }, type: 'enum', options: ['', ...ENGINE_SOUNDS], default: '' },
+      { path: 'vfx', label: { en: 'VFX', ru: 'Эффект' }, type: 'enum', options: ['', ...RCS_VFX], default: 'rcs_0' },
     ],
     state: [],
   },

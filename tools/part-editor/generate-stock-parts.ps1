@@ -87,6 +87,21 @@ foreach ($line in Get-Content -LiteralPath $AllParts -Encoding UTF8) {
         attachments = $attachments
     }
 
+    # Surface sockets: the defindexes and shapes the stock part carries. The
+    # editor offers the same configs in its own list (dynamic-presets.js).
+    $dynamic = @($schema.dynamicAttachmentConfigs | Where-Object { $null -ne $_ })
+    if ($dynamic.Count -gt 0) {
+        $part.dynamicAttachmentConfigs = @($dynamic | ForEach-Object {
+            [ordered]@{ defindex = [int]$_.defindex; shape = $_.shape }
+        })
+    }
+    if ($null -ne $schema.dynamicCurrPivot) {
+        $part.dynamicCurrPivot = Vec3 $schema.dynamicCurrPivot
+    }
+    if ($null -ne $schema.radialSnapping) {
+        $part.radialSnapping = $schema.radialSnapping
+    }
+
     $variants = @($schema.variants | Where-Object { $null -ne $_ })
     if ($variants.Count -gt 0) {
         $part.variants = $variants

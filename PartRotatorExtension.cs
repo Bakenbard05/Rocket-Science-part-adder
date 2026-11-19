@@ -133,6 +133,10 @@ namespace PartRotatorExtension
                 // The reentry material is preloaded in the background; if it is already there,
                 // the shells can use it right away.
                 PartLoader.PartLoader.ApplyReentryMaterial();
+                // The parts folder is watched: a part that is written again is built
+                // again, without a restart of the game.
+                PartLoader.PartReloader.Watch(System.IO.Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location));
             }
             catch (Exception e)
             {
@@ -165,6 +169,10 @@ namespace PartRotatorExtension
             // The shells wait for the reentry material of the game, which arrives with the
             // asynchronous preload of the prefab cache.
             PartLoader.PartLoader.ApplyReentryMaterial();
+
+            // The parts folder is watched: a part that is written while the game runs is
+            // built again, so a change can be seen without a restart.
+            PartLoader.PartReloader.Tick();
 
             //base.Update();
             //var asc = Finders.ComponentByTag<AssemblyShopController>(Tag.assemblyShopController, false);
